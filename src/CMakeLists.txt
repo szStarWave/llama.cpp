@@ -58,3 +58,7 @@ if (BUILD_SHARED_LIBS)
     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
     target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
 endif()
+
+if (LLAMA_AIDAPTIV)
+    target_compile_definitions(llama PUBLIC LLAMA_USE_AIDAPTIV)
+endif()

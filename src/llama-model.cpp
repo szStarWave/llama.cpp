@@ -2133,6 +2133,16 @@ llama_model_params llama_model_default_params() {
         /*.use_extra_bufts             =*/ true,
         /*.no_host                     =*/ false,
         /*.no_alloc                    =*/ false,
+        /*.requant                     =*/ -1,  // auto: on for qwen35/qwen35moe/gemma4/qwen3
+#ifdef LLAMA_USE_AIDAPTIV
+        /*.offload_folder              =*/ nullptr,
+        /*.vram_experts_cached_gb      =*/ 0,
+        /*.dram_experts_cached_gb      =*/ 0,
+        /*.vram_experts_per_layer      =*/ -1,
+        /*.dram_experts_per_layer      =*/ -1,
+        /*.shared_buffer_layers        =*/ 0,
+        /*.temp_uuid                   =*/ 0,
+#endif
     };
 
     return result;

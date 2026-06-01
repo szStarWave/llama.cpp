@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "aidaptiv.h"
 #include "log.h"
 #include "llama.h"
 #include "chat.h"
@@ -187,14 +188,18 @@ public:
 
     // appends server tokens, updates the media map. copies media chunks.
     void push_back(server_tokens & tokens);
+    void copy_prefix_from(const server_tokens & tokens, size_t n);
 
     // for compatibility with context shift and prompt truncation
     void insert(const llama_tokens & inp_tokens);
 
     // for compatibility with speculative decoding, ctx shift, slot save/load
     const llama_tokens & get_tokens() const;
+    const llama_tokens & get_all_tokens() const;
 
     llama_tokens get_text_tokens() const;
+    std::vector<common_aidaptiv_mtmd_chunk_info> get_aidaptiv_mtmd_info() const;
+    size_t valid_keep_first(size_t n) const;
 
     // for compatibility with speculative decoding
     void set_token(llama_pos pos, llama_token id);

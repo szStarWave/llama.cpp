@@ -24,6 +24,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cinttypes>
 #include <climits>
 #include <cstdarg>
@@ -2047,6 +2048,62 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_NO_HOST"));
     add_opt(common_arg(
+        {"--phison-mode"},
+        "enable Phison aiDAPTIV KV/expert cache integration",
+        [](common_params & params) {
+            params.phison_mode = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_MODE"));
+    add_opt(common_arg(
+        {"--phison-offload-path"}, "DIR",
+        "Phison aiDAPTIV offload directory",
+        [](common_params & params, const std::string & value) {
+            params.phison_offload_path = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_OFFLOAD_PATH"));
+    add_opt(common_arg(
+        {"--ssd-kv-offload-gb"}, "N",
+        "Phison aiDAPTIV SSD KV cache budget in GiB (-1 = auto, 0 = disabled)",
+        [](common_params & params, int value) {
+            params.phison_ssd_kv_offload_gb = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_SSD_KV_OFFLOAD_GB"));
+    add_opt(common_arg(
+        {"--dram-kv-offload-gb"}, "N",
+        "Phison aiDAPTIV DRAM KV cache budget in GiB (-1 = auto, 0 = disabled)",
+        [](common_params & params, int value) {
+            params.phison_dram_kv_offload_gb = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_DRAM_KV_OFFLOAD_GB"));
+    add_opt(common_arg(
+        {"--kv-cache-resume-policy"}, "N",
+        "Phison aiDAPTIV KV cache resume policy (0 = delete old caches, 1 = try resume)",
+        [](common_params & params, int value) {
+            params.phison_kv_cache_resume_policy = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_KV_CACHE_RESUME_POLICY"));
+    add_opt(common_arg(
+        {"--vram-experts-cached-gb"}, "N",
+        "Phison aiDAPTIV VRAM expert cache budget in GiB",
+        [](common_params & params, int value) {
+            params.phison_vram_experts_cached_gb = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_VRAM_EXPERTS_CACHED_GB"));
+    add_opt(common_arg(
+        {"--dram-experts-cached-gb"}, "N",
+        "Phison aiDAPTIV DRAM expert cache budget in GiB",
+        [](common_params & params, int value) {
+            params.phison_dram_experts_cached_gb = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_DRAM_EXPERTS_CACHED_GB"));
+    add_opt(common_arg(
+        {"--debug-log-path"}, "DIR",
+        "Phison aiDAPTIV debug log directory",
+        [](common_params & params, const std::string & value) {
+            params.phison_debug_log_path = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_DEBUG_LOG_PATH"));
+    add_opt(common_arg(
         {"-ctk", "--cache-type-k"}, "TYPE",
         string_format(
             "KV cache data type for K\n"
@@ -2318,6 +2375,23 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             exit(0);
         }
     ));
+    add_opt(common_arg(
+        {"-rq"}, "MODE",
+        "load-time requantize always-on tensors to Q4_K (qwen35/qwen35moe: attention/shared-expert/SSM-out; gemma4: attention/per-layer FFN; qwen3: attn_k/attn_v/ffn_down). "
+        "MODE in {auto, on, off}. Default: auto (on for qwen35/qwen35moe/gemma4/qwen3). "
+        "When active, mmap is disabled automatically.",
+        [](common_params & params, const std::string & value) {
+            if (value == "on" || value == "1" || value == "true") {
+                params.requant = 1;
+            } else if (value == "off" || value == "0" || value == "false") {
+                params.requant = 0;
+            } else if (value == "auto" || value == "-1") {
+                params.requant = -1;
+            } else {
+                throw std::invalid_argument("invalid -rq value: '" + value + "' (expected auto|on|off)");
+            }
+        }
+    ).set_env("LLAMA_ARG_REQUANT"));
     add_opt(common_arg(
         {"-ot", "--override-tensor"}, "<tensor name pattern>=<buffer type>,...",
         "override tensor buffer type", [](common_params & params, const std::string & value) {

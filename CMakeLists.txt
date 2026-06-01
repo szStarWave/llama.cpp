@@ -126,6 +126,8 @@ option(LLAMA_TESTS_INSTALL          "llama: install tests"                      
 # 3rd party libs
 option(LLAMA_OPENSSL    "llama: use openssl to support HTTPS" ON)
 option(LLAMA_LLGUIDANCE "llama-common: include LLGuidance library for structured output in common utils" OFF)
+option(LLAMA_AIDAPTIV   "llama: include Phison aiDAPTIV support" OFF)
+set(AIDAPTIV_ROOT "" CACHE PATH "Path to the Phison aiDAPTIV SDK root")
 
 
 # Required for relocatable CMake package
@@ -195,6 +197,32 @@ if (NOT TARGET ggml AND NOT LLAMA_USE_SYSTEM_GGML)
     set(GGML_BUILD_COMMIT ${LLAMA_BUILD_COMMIT})
     add_subdirectory(ggml)
     # ... otherwise assume ggml is added by a parent CMakeLists.txt
+endif()
+
+if (LLAMA_AIDAPTIV)
+    if (AIDAPTIV_ROOT STREQUAL "")
+        message(FATAL_ERROR "LLAMA_AIDAPTIV requires -DAIDAPTIV_ROOT=<path-to-aiDAPTIV-sdk>")
+    endif()
+
+    set(AIDAPTIV_INCLUDE_DIR "${AIDAPTIV_ROOT}/aidaptiv/include")
+    set(AIDAPTIV_IMPLIB      "${AIDAPTIV_ROOT}/aidaptiv/lib/aidaptiv.lib")
+    set(AIDAPTIV_DLL         "${AIDAPTIV_ROOT}/aidaptiv/bin/aidaptiv.dll")
+
+    if (NOT EXISTS "${AIDAPTIV_INCLUDE_DIR}/aidaptiv.hpp")
+        message(FATAL_ERROR "aidaptiv.hpp not found at ${AIDAPTIV_INCLUDE_DIR}")
+    endif()
+    if (NOT EXISTS "${AIDAPTIV_IMPLIB}")
+        message(FATAL_ERROR "aidaptiv.lib not found at ${AIDAPTIV_IMPLIB}")
+    endif()
+    if (NOT EXISTS "${AIDAPTIV_DLL}")
+        message(FATAL_ERROR "aidaptiv.dll not found at ${AIDAPTIV_DLL}")
+    endif()
+
+    add_library(aidaptiv SHARED IMPORTED)
+    set_target_properties(aidaptiv PROPERTIES
+        IMPORTED_LOCATION             "${AIDAPTIV_DLL}"
+        IMPORTED_IMPLIB               "${AIDAPTIV_IMPLIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${AIDAPTIV_INCLUDE_DIR}")
 endif()
 
 #
