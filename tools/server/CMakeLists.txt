@@ -48,3 +48,17 @@ target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(${TARGET} PRIVATE server-context llama-ui PUBLIC llama-common cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
 
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
+
+if (LLAMA_AIDAPTIV)
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:${TARGET}>
+            $<TARGET_FILE_DIR:${TARGET}>
+        COMMAND_EXPAND_LISTS)
+    if (EXISTS "${AIDAPTIV_ROOT}/ada/ada.exe")
+        add_custom_command(TARGET ${TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${AIDAPTIV_ROOT}/ada/ada.exe"
+                $<TARGET_FILE_DIR:${TARGET}>)
+    endif()
+endif()

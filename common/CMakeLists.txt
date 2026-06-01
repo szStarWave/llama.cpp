@@ -56,6 +56,8 @@ set(TARGET llama-common)
 add_library(${TARGET}
     arg.cpp
     arg.h
+    aidaptiv.cpp
+    aidaptiv.h
     base64.hpp
     chat-auto-parser-generator.cpp
     chat-auto-parser-helpers.cpp
@@ -167,6 +169,11 @@ if (LLAMA_LLGUIDANCE)
     if (WIN32)
         target_link_libraries(${TARGET} PRIVATE ws2_32 userenv ntdll bcrypt)
     endif()
+endif()
+
+if (LLAMA_AIDAPTIV)
+    target_compile_definitions(${TARGET} PUBLIC LLAMA_USE_AIDAPTIV AIDAPTIV_SHARED)
+    target_link_libraries(${TARGET} PUBLIC aidaptiv)
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)

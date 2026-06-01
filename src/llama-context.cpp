@@ -395,11 +395,13 @@ llama_context::~llama_context() {
 
             const size_t size_exp = backend_buf_exp_size[i];
             const size_t size_act = ggml_backend_sched_get_buffer_size(sched.get(), backend);
-            if (size_exp == size_act) {
-                LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, matches expectation of %8.4f MiB\n",
+            if (size_act > size_exp) {
+                // Under-reservation: actual usage exceeded the worst-case prediction, which forced
+                // a grow-realloc during inference and means the predicted memory budget was wrong.
+                LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, exceeds expectation of %8.4f MiB\n",
                     __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
             } else {
-                LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, does not match expectation of %8.4f MiB\n",
+                LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, expectation was %8.4f MiB\n",
                     __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
             }
         }
@@ -3319,6 +3321,10 @@ void llama_context::opt_epoch(
 llama_context_params llama_context_default_params() {
     llama_context_params result = {
         /*.n_ctx                       =*/ 512,
+#ifdef LLAMA_USE_AIDAPTIV
+        /*.offload_folder              =*/ nullptr,
+        /*.temp_uuid                   =*/ 0,
+#endif
         /*.n_batch                     =*/ 2048,
         /*.n_ubatch                    =*/ 512,
         /*.n_seq_max                   =*/ 1,

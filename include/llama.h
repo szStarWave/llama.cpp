@@ -324,6 +324,16 @@ extern "C" {
         bool use_extra_bufts; // use extra buffer types (used for weight repacking)
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
+        int8_t requant;       // load-time requant of always-on tensors to Q4_K. -1 = auto (on for qwen35/qwen35moe/gemma4/qwen3), 0 = off, 1 = on. Forces no-mmap when active.
+#ifdef LLAMA_USE_AIDAPTIV
+        const char * offload_folder;        // aiDAPTIV offload folder
+        uint32_t vram_experts_cached_gb;    // VRAM experts cache size, 0 = disable
+        uint32_t dram_experts_cached_gb;    // DRAM experts cache size
+        int32_t  vram_experts_per_layer;    // VRAM experts per layer, -1 = fallback to cached GB
+        int32_t  dram_experts_per_layer;    // DRAM experts per layer, -1 = fallback to cached GB
+        int32_t  shared_buffer_layers;      // number of layers per shared buffer
+        uint64_t temp_uuid;                 // temporary cache UUID
+#endif
     };
 
     struct llama_sampler_seq_config {
@@ -335,6 +345,10 @@ extern "C" {
     //       https://github.com/ggml-org/llama.cpp/pull/7544
     struct llama_context_params {
         uint32_t n_ctx;             // text context, 0 = from model
+#ifdef LLAMA_USE_AIDAPTIV
+        const char * offload_folder; // aiDAPTIV offload folder
+        uint64_t temp_uuid;          // temporary cache UUID
+#endif
         uint32_t n_batch;           // logical maximum batch size that can be submitted to llama_decode
         uint32_t n_ubatch;          // physical maximum batch size
         uint32_t n_seq_max;         // max number of sequences (i.e. distinct states for recurrent models)

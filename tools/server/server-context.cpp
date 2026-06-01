@@ -106,6 +106,7 @@ struct server_slot {
     slot_state state = SLOT_STATE_IDLE;
 
     server_prompt prompt;
+    bool phison_kv_saved = false;
 
     void prompt_save(server_prompt_cache & prompt_cache) const {
         GGML_ASSERT(prompt.data.size() == 0);
@@ -200,6 +201,7 @@ struct server_slot {
         generated_tokens.clear();
         generated_token_probs.clear();
         json_schema = json();
+        phison_kv_saved = false;
 
         // clear speculative decoding stats
         n_draft_total = 0;
@@ -695,6 +697,11 @@ private:
     bool sleeping = false;
 
     void destroy() {
+        if (llama_init && llama_init->aidaptiv() && llama_init->aidaptiv()->enabled()) {
+            llama_init->aidaptiv()->flush_kv_cache();
+            llama_init->aidaptiv()->remove_temp_caches();
+        }
+
         llama_init.reset();
 
         ctx_tgt = nullptr;
@@ -715,6 +722,70 @@ private:
         slot.prompt_save(*prompt_cache);
         slot.prompt_clear(false);
         prompt_cache->update();
+    }
+
+    common_aidaptiv * aidaptiv() const {
+        return llama_init ? llama_init->aidaptiv() : nullptr;
+    }
+
+    std::vector<common_adapter_lora_info> phison_active_loras(const server_slot & slot) const {
+        std::vector<common_adapter_lora_info> res;
+        for (const auto & la : slot.lora) {
+            if (la.ptr != nullptr && la.scale != 0.0f) {
+                res.push_back(la);
+            }
+        }
+        return res;
+    }
+
+    int phison_restore_slot(server_slot & slot, const server_tokens & input_tokens, int n_past) {
+        auto * adptv = aidaptiv();
+        if (adptv == nullptr || !adptv->enabled() || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
+            return n_past;
+        }
+
+        const llama_tokens & all_tokens = input_tokens.get_all_tokens();
+        if (all_tokens.size() <= 1) {
+            return n_past;
+        }
+
+        const auto mtmd_info = input_tokens.get_aidaptiv_mtmd_info();
+        const auto loras = phison_active_loras(slot);
+        auto stats = adptv->restore_kv_cache(all_tokens, mtmd_info, loras, slot.id, std::max(0, n_past));
+
+        uint32_t n_reuse = stats.dram_reuse_token_cnt + stats.ssd_reuse_token_cnt;
+        size_t n_new = std::min<size_t>(all_tokens.size() - 1, (size_t) std::max(0, n_past) + n_reuse);
+        n_new = input_tokens.valid_keep_first(n_new);
+
+        if (n_new > slot.prompt.tokens.size()) {
+            slot.prompt.data = {};
+            slot.prompt.checkpoints.clear();
+            slot.prompt.tokens.copy_prefix_from(input_tokens, n_new);
+        }
+
+        SLT_INF(slot, "aiDAPTIV restore: Hit token cnt (GPU): %d, Hit token cnt (DRAM): %u, Hit token cnt (CACHE): %u, n_past: %d -> %zu\n",
+                std::max(0, n_past), stats.dram_reuse_token_cnt, stats.ssd_reuse_token_cnt, n_past, n_new);
+
+        return (int) n_new;
+    }
+
+    void phison_save_slot(server_slot & slot) {
+        auto * adptv = aidaptiv();
+        if (adptv == nullptr || !adptv->enabled() || slot.phison_kv_saved || !slot.task || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
+            return;
+        }
+
+        const llama_tokens & all_tokens = slot.prompt.tokens.get_all_tokens();
+        if (all_tokens.empty()) {
+            return;
+        }
+
+        const auto mtmd_info = slot.prompt.tokens.get_aidaptiv_mtmd_info();
+        const auto loras = phison_active_loras(slot);
+        adptv->save_kv_cache(all_tokens, mtmd_info, loras, slot.id);
+        adptv->flush_kv_cache();
+        slot.phison_kv_saved = true;
+        SLT_INF(slot, "aiDAPTIV saved KV cache, n_tokens = %zu\n", all_tokens.size());
     }
 
     void handle_sleeping_state(bool new_state) {
@@ -2456,6 +2527,7 @@ private:
 
                             slot.print_timings();
                             send_final_response(slot);
+                            phison_save_slot(slot);
                             slot.release();
 
                             continue;
@@ -2464,6 +2536,7 @@ private:
                         // TODO: support memory-less logits computation
                         if (slot.task->need_logits() && !llama_get_memory(ctx_tgt)) {
                             send_error(slot, "the current context does not logits computation. skipping", ERROR_TYPE_SERVER);
+                            phison_save_slot(slot);
                             slot.release();
                             continue;
                         }
@@ -2476,6 +2549,7 @@ private:
                                                "size (current batch size: %d)",
                                                slot.task->n_tokens(), n_ubatch),
                                            ERROR_TYPE_SERVER);
+                                phison_save_slot(slot);
                                 slot.release();
                                 continue;
                             }
@@ -2487,6 +2561,7 @@ private:
                                         "input (%d tokens) is larger than the max context size (%d tokens). skipping",
                                         slot.task->n_tokens(), slot.n_ctx),
                                     ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                phison_save_slot(slot);
                                 slot.release();
                                 continue;
                             }
@@ -2497,6 +2572,7 @@ private:
                                                          "tokens), try increasing it",
                                                          slot.task->n_tokens(), slot.n_ctx),
                                            ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                phison_save_slot(slot);
                                 slot.release();
                                 continue;
                             }
@@ -2690,6 +2766,13 @@ private:
                         if (n_past == slot.task->n_tokens() && n_past > 0) {
                             SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
                             n_past--;
+                            SLT_WRN(slot, "n_past was set to %d\n", n_past);
+                        }
+
+                        n_past = phison_restore_slot(slot, input_tokens, n_past);
+                        if (n_past == slot.task->n_tokens() && n_past > 0) {
+                            SLT_WRN(slot, "need to evaluate at least 1 token after aiDAPTIV restore (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
+                            n_past = (int) input_tokens.valid_keep_first((size_t) n_past - 1);
                             SLT_WRN(slot, "n_past was set to %d\n", n_past);
                         }
 
@@ -3169,6 +3252,7 @@ private:
                     slot.print_timings();
                     send_final_response(slot);
                     metrics.on_prediction(slot);
+                    phison_save_slot(slot);
                     slot.release();
 
                     continue;
@@ -3283,6 +3367,7 @@ private:
                         slot.print_timings();
                         send_final_response(slot);
                         metrics.on_prediction(slot);
+                        phison_save_slot(slot);
                         slot.release();
 
                         break;
