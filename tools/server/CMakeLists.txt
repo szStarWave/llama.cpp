@@ -49,7 +49,7 @@ target_link_libraries(${TARGET} PRIVATE server-context llama-ui PUBLIC llama-com
 
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
 
-if (LLAMA_AIDAPTIV)
+if (LLAMA_AIDAPTIV AND LLAMA_AIDAPTIV_RUNTIME)
     add_custom_command(TARGET ${TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_RUNTIME_DLLS:${TARGET}>

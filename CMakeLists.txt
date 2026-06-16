@@ -127,6 +127,7 @@ option(LLAMA_TESTS_INSTALL          "llama: install tests"                      
 option(LLAMA_OPENSSL    "llama: use openssl to support HTTPS" ON)
 option(LLAMA_LLGUIDANCE "llama-common: include LLGuidance library for structured output in common utils" OFF)
 option(LLAMA_AIDAPTIV   "llama: include Phison aiDAPTIV support" OFF)
+option(LLAMA_AIDAPTIV_RUNTIME "llama-common: initialize the Phison aiDAPTIV runtime when aiDAPTIV support is enabled" ${LLAMA_AIDAPTIV})
 set(AIDAPTIV_ROOT "" CACHE PATH "Path to the Phison aiDAPTIV SDK root")
 
 

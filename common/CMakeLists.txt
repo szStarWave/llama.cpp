@@ -172,8 +172,12 @@ if (LLAMA_LLGUIDANCE)
 endif()
 
 if (LLAMA_AIDAPTIV)
-    target_compile_definitions(${TARGET} PUBLIC LLAMA_USE_AIDAPTIV AIDAPTIV_SHARED)
+    target_compile_definitions(${TARGET} PUBLIC AIDAPTIV_SHARED)
     target_link_libraries(${TARGET} PUBLIC aidaptiv)
+
+    if (LLAMA_AIDAPTIV_RUNTIME)
+        target_compile_definitions(${TARGET} PRIVATE LLAMA_USE_AIDAPTIV_RUNTIME)
+    endif()
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)

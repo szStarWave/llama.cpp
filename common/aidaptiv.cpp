@@ -2,7 +2,7 @@
 
 #include "log.h"
 
-#ifdef LLAMA_USE_AIDAPTIV
+#ifdef LLAMA_USE_AIDAPTIV_RUNTIME
 #include "aidaptiv.hpp"
 #endif
 
@@ -19,7 +19,7 @@ static std::vector<common_adapter_lora_info> common_aidaptiv_active_loras(const 
     return res;
 }
 
-#ifdef LLAMA_USE_AIDAPTIV
+#ifdef LLAMA_USE_AIDAPTIV_RUNTIME
 
 static std::vector<aidaptiv::lora_info> common_aidaptiv_lora_info(const std::vector<common_adapter_lora_info> & lora_adapters) {
     std::vector<aidaptiv::lora_info> res;

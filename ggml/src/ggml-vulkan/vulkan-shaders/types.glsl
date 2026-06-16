@@ -204,6 +204,54 @@ struct block_q1_0
 #define A_TYPE block_q1_0
 #endif
 
+#define QUANT_K_TURBO3_0 128
+#define QUANT_R_TURBO3_0 1
+
+struct block_turbo3_0
+{
+    float16_t norm;
+    uint8_t qs[QUANT_K_TURBO3_0 / 4];
+    uint8_t signs[QUANT_K_TURBO3_0 / 8];
+};
+
+struct block_turbo3_0_packed16
+{
+    float16_t norm;
+    uint16_t qs[QUANT_K_TURBO3_0 / 4 / 2];
+    uint16_t signs[QUANT_K_TURBO3_0 / 8 / 2];
+};
+
+#if defined(DATA_A_TURBO3_0)
+#define QUANT_K QUANT_K_TURBO3_0
+#define QUANT_R QUANT_R_TURBO3_0
+#define QUANT_AUXF 1
+#define A_TYPE block_turbo3_0
+#define A_TYPE_PACKED16 block_turbo3_0_packed16
+#endif
+
+#define QUANT_K_TURBO4_0 128
+#define QUANT_R_TURBO4_0 1
+
+struct block_turbo4_0
+{
+    float16_t norm;
+    uint8_t qs[QUANT_K_TURBO4_0 / 2];
+};
+
+struct block_turbo4_0_packed16
+{
+    float16_t norm;
+    uint16_t qs[QUANT_K_TURBO4_0 / 2 / 2];
+};
+
+#if defined(DATA_A_TURBO4_0)
+#define QUANT_K QUANT_K_TURBO4_0
+#define QUANT_R QUANT_R_TURBO4_0
+#define QUANT_AUXF 1
+#define A_TYPE block_turbo4_0
+#define A_TYPE_PACKED16 block_turbo4_0_packed16
+#endif
+
 #define QUANT_K_Q8_1 32
 #define QUANT_R_Q8_1 1
 
