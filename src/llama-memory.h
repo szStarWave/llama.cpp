@@ -120,6 +120,12 @@ struct llama_memory_i {
 
     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
+
+    virtual uint32_t get_size() const = 0;
+    virtual size_t get_cache_size(uint64_t node_size) const = 0;
+    virtual void kv_cache_read(void* ptr, const size_t &node_stride, const uint32_t &node_size, const llama_seq_id &seq_id, const llama_pos &start_pos, const size_t &count, const bool is_last_node, const llama_pos * mrope_pos = nullptr) = 0;
+    virtual void kv_cache_write(void* ptr, const size_t &node_stride , const uint32_t &node_size, const llama_seq_id &seq_id, const llama_pos &start_pos, const size_t &count, const bool is_last_node, const llama_pos * mrope_pos = nullptr) = 0;
+    virtual bool is_reusable(const llama_seq_id& seq_id, const size_t&  count, bool* reusable) = 0;
 };
 
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

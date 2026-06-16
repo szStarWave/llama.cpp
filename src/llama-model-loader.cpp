@@ -1063,22 +1063,25 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
 }
 
 // find the first buffer type in the list that can use the tensor
-static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hparams, ggml_tensor * tensor, ggml_op op, const buft_list_t * buft_list) {
+static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hparams, ggml_tensor * tensor, ggml_op op, const buft_list_t * buft_list, bool no_extra_bufts) {
     GGML_ASSERT(!buft_list->empty());
     for (const auto & cur : *buft_list) {
         ggml_backend_dev_t cur_dev = cur.first;
         ggml_backend_buffer_type_t cur_buft = cur.second;
         if (weight_buft_supported(hparams, tensor, op, cur_buft, cur_dev)) {
-            return cur_buft;
+            if (!no_extra_bufts || strcmp("CPU_REPACK", ggml_backend_buft_name(cur_buft)) != 0) {
+                return cur_buft;
+            }
         }
     }
 
     return nullptr;
 }
 
-struct ggml_tensor * llama_model_loader::create_tensor(
-        const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
-        const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
+// This function is extracted from `llama_model_loader::create_tensor(...)`.
+std::pair<ggml_context *, ggml_backend_buffer_type_t> llama_model_loader::get_suitable_ctx(const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
+        const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::vector<int64_t> & ne, int flags, bool no_extra_bufts) {
+
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
@@ -1194,7 +1197,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
                 if (std::regex_search(tensor_name, pattern)) {
                     if (overrides->buft == ggml_backend_cpu_buffer_type()) {
                         // when overriding to a CPU buffer, consider the extra buffer types
-                        buft = select_weight_buft(hparams, t_meta, op, buft_list_cpu);
+                        buft = select_weight_buft(hparams, t_meta, op, buft_list_cpu, no_extra_bufts);
                         if (use_mmap) {
                             static std::once_flag once;
                             std::call_once(once, [] {
@@ -1215,7 +1218,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         }
 
         if (!buft) {
-            buft = select_weight_buft(hparams, t_meta, op, buft_list);
+            buft = select_weight_buft(hparams, t_meta, op, buft_list, no_extra_bufts);
             if (!buft) {
                 throw std::runtime_error(format("failed to find a compatible buffer type for tensor %s", tn.str().c_str()));
             }
@@ -1243,6 +1246,55 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
         return buft;
     };
+
+    if (files.empty()) {
+        if (flags & TENSOR_SKIP_IF_VIRTUAL) {
+            return {nullptr, nullptr};
+        }
+        ggml_type type = GGML_TYPE_F32;
+        const int64_t tid = gguf_find_tensor(metadata, tn.str().c_str());
+        if (tid != -1) {
+            type = gguf_get_tensor_type(metadata, tid);
+        }
+
+        // for tensors that are not required some of the dimensions can be invalid:
+        if (flags & TENSOR_NOT_REQUIRED) {
+            for (size_t dim = 0; dim < ne.size(); dim++) {
+                if (ne.begin()[dim] <= 0) {
+                    return {nullptr, nullptr};
+                }
+            }
+        }
+
+        ggml_tensor t_meta;
+        memset(&t_meta, 0, sizeof(ggml_tensor));
+        t_meta.type = type;
+        for (size_t dim = 0; dim < GGML_MAX_DIMS; dim++) {
+            t_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
+            GGML_ASSERT(t_meta.ne[dim] >= 1);
+            t_meta.nb[dim] = dim == 0 ? ggml_type_size(type) : t_meta.ne[dim-1]*t_meta.nb[dim-1];
+            GGML_ASSERT(t_meta.nb[dim] >= 1);
+        }
+        ggml_set_name(&t_meta, tn.str().c_str());
+
+        ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
+        GGML_ASSERT(buft != nullptr);
+        ggml_context * ctx = ctx_for_buft(buft);
+        return {ctx, buft};
+    }
+
+    ggml_tensor * t_meta = get_tensor_meta(tn.str().c_str());
+    ggml_backend_buffer_type_t buft = buft_for_tensor(t_meta);
+    if (buft == nullptr) {
+        return {nullptr, nullptr}; // return type is ggml_tensor *
+    }
+    ggml_context * ctx = ctx_for_buft(buft);
+    return {ctx, buft};
+}
+
+struct ggml_tensor * llama_model_loader::create_tensor(
+        const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
+        const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
 
     if (files.empty()) {
         if (flags & TENSOR_SKIP_IF_VIRTUAL) {
@@ -1274,20 +1326,19 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         }
         ggml_set_name(&t_meta, tn.str().c_str());
 
-        ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
-        GGML_ASSERT(buft != nullptr);
-        ggml_context * ctx = ctx_for_buft(buft);
+        std::vector<int64_t> ne_list(ne);
+        auto [ctx, buft] = get_suitable_ctx(hparams, buft_list_cpu, buft_list_input, buft_list_output,buft_list_layer, tn, ne_list, flags, false);
+
         ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
         ggml_set_name(ret, tn.str().c_str());
         return ret;
     }
 
-    ggml_tensor * t_meta = get_tensor_meta(tn.str().c_str());
-    ggml_backend_buffer_type_t buft = buft_for_tensor(t_meta);
+    std::vector<int64_t> ne_list(ne);
+    auto [ctx, buft] = get_suitable_ctx(hparams, buft_list_cpu, buft_list_input, buft_list_output,buft_list_layer, tn, ne_list, flags, false);
     if (buft == nullptr) {
         return nullptr; // return type is ggml_tensor *
     }
-    ggml_context * ctx = ctx_for_buft(buft);
 
     // if duplicated, check if the original tensor was allocated in the same buffer type context and avoid creating a new one
     if (flags & TENSOR_DUPLICATED) {
@@ -1801,12 +1852,12 @@ bool llama_model_loader::load_all_data(
                     file->read_raw(read_buf.data(), disk_n_size);
                     requant_and_set((const uint8_t *) read_buf.data());
                 } else {
-                    file->seek(weight->offs, SEEK_SET);
-                    file->read_raw(cur->data, n_size);
-                    if (check_tensors) {
-                        validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
-                            return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
-                        }));
+                file->seek(weight->offs, SEEK_SET);
+                file->read_raw(cur->data, n_size);
+                if (check_tensors) {
+                    validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
+                        return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
+                    }));
                     }
                 }
             } else {

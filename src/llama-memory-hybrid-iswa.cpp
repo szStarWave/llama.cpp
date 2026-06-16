@@ -4,6 +4,8 @@
 #include "llama-model.h"
 #include "llama-context.h"
 
+#include "aidaptiv-dispatch.h"
+
 //
 // llama_memory_hybrid_iswa
 //
@@ -274,4 +276,24 @@ const llama_kv_cache_iswa_context * llama_memory_hybrid_iswa_context::get_attn()
 
 const llama_memory_recurrent_context * llama_memory_hybrid_iswa_context::get_recr() const {
     return static_cast<const llama_memory_recurrent_context *>(ctx_recr.get());
+}
+
+uint32_t llama_memory_hybrid_iswa::get_size() const {
+    return g_aidaptiv->hyb_iswa_get_size(*this);
+}
+
+size_t llama_memory_hybrid_iswa::get_cache_size(uint64_t node_size) const {
+    return g_aidaptiv->hyb_iswa_get_cache_size(*this, node_size);
+}
+
+bool llama_memory_hybrid_iswa::is_reusable(const llama_seq_id & seq_id, const size_t & count, bool * reusable) {
+    return g_aidaptiv->hyb_iswa_is_reusable(*this, seq_id, count, reusable);
+}
+
+void llama_memory_hybrid_iswa::kv_cache_read(void * ptr, const size_t & node_stride, const uint32_t & node_size, const llama_seq_id & seq_id, const llama_pos & start_pos, const size_t & count, const bool is_last_node, const llama_pos * mrope_pos) {
+    g_aidaptiv->hyb_iswa_kv_cache_read(*this, ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mrope_pos);
+}
+
+void llama_memory_hybrid_iswa::kv_cache_write(void * ptr, const size_t & node_stride, const uint32_t & node_size, const llama_seq_id & seq_id, const llama_pos & start_pos, const size_t & count, const bool is_last_node, const llama_pos * mrope_pos) {
+    g_aidaptiv->hyb_iswa_kv_cache_write(*this, ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mrope_pos);
 }

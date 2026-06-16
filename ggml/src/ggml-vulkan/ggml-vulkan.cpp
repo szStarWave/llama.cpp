@@ -258,6 +258,7 @@ static ggml_backend_buffer_t ggml_backend_vk_buffer_type_alloc_buffer(ggml_backe
 static size_t ggml_backend_vk_buffer_type_get_alignment(ggml_backend_buffer_type_t buft);
 static size_t ggml_backend_vk_buffer_type_get_max_size(ggml_backend_buffer_type_t buft);
 static size_t ggml_backend_vk_buffer_type_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor);
+static size_t ggml_backend_vk_buffer_type_max_buft_allocate_size(ggml_backend_buffer_type_t buft, enum ggml_op op);
 static ggml_backend_buffer_type_i ggml_backend_vk_buffer_type_interface = {
     /* .get_name         = */ ggml_backend_vk_buffer_type_name,
     /* .alloc_buffer     = */ ggml_backend_vk_buffer_type_alloc_buffer,
@@ -265,6 +266,7 @@ static ggml_backend_buffer_type_i ggml_backend_vk_buffer_type_interface = {
     /* .get_max_size     = */ ggml_backend_vk_buffer_type_get_max_size,
     /* .get_alloc_size   = */ ggml_backend_vk_buffer_type_get_alloc_size,
     /* .is_host          = */ NULL,
+    /* .max_buft_allocate_size = */ ggml_backend_vk_buffer_type_max_buft_allocate_size,
 };
 
 class vk_memory_logger;
@@ -7384,6 +7386,23 @@ static bool ggml_vk_buffer_write_2d_async(vk_context subctx, vk_buffer& dst, siz
     return true;
 }
 
+static void ggml_vk_buffer_write_2d_async_stg(vk_context subctx, vk_buffer& dst, size_t dst_offset, size_t src_offset, vk_buffer_struct * src, size_t spitch, size_t width, size_t height) {
+    // Buffer is already mapped
+    if(dst->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible) {
+        std::cerr << "ggml_vulkan: buffer_write_async dst buffer is host_visible. Use synchronous write." << std::endl;
+        GGML_ABORT("fatal error");
+    }
+    const size_t copy_size = width*height;
+
+    VkBufferCopy buf_copy = {
+        src_offset,
+        dst_offset,
+        copy_size};
+
+    ggml_vk_sync_buffers(nullptr, subctx);
+    vkCmdCopyBuffer(subctx->s->buffer->buf, (VkBuffer)src->buffer, (VkBuffer)dst->buffer, 1, &buf_copy);
+}
+
 static bool ggml_vk_buffer_write_async(vk_context subctx, vk_buffer& dst, size_t offset, const void * src, size_t size, bool sync_staging = false) {
     VK_LOG_DEBUG("ggml_vk_buffer_write_async(" << size << ")");
     return ggml_vk_buffer_write_2d_async(subctx, dst, offset, src, size, size, size, 1, sync_staging);
@@ -7417,6 +7436,49 @@ static void ggml_vk_buffer_write_2d(vk_buffer& dst, size_t offset, const void * 
 
         ggml_vk_submit(subctx, dst->device->fence);
         VK_CHECK(dst->device->device.waitForFences({ dst->device->fence }, true, UINT64_MAX), "vk_buffer_write_2d waitForFences");
+        dst->device->device.resetFences({ dst->device->fence });
+        ggml_vk_queue_command_pools_cleanup(dst->device);
+    }
+}
+
+static void ggml_vk_buffer_set_expert_tensor(void * src, ggml_expert_tensor * const experts, const uint32_t n_experts) {
+    ggml_tensor * tensor = experts[0].tensor;
+    ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    ggml_backend_vk_buffer_context * buf_ctx = (ggml_backend_vk_buffer_context *)buffer->context;
+    vk_buffer dst = buf_ctx->dev_buffer;
+    vk_buffer_struct * src_buffer = reinterpret_cast<vk_buffer_struct *>(src);
+    if (dst->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible) {
+        for (uint32_t i = 0; i < n_experts; ++i) {
+            ggml_tensor * tensor = experts[i].tensor;
+            ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+            ggml_backend_vk_buffer_context * buf_ctx = (ggml_backend_vk_buffer_context *)buf->context;
+            vk_buffer buffer = buf_ctx->dev_buffer;
+
+            size_t src_offset = experts[i].src_offset;
+            size_t dst_offset = vk_tensor_offset(tensor) + tensor->view_offs + experts[i].dst_offset;
+            size_t size = experts[i].size_per_expert;
+            GGML_ASSERT(buffer->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCoherent);
+            memcpy((uint8_t *)buffer->ptr + dst_offset, (const uint8_t *) src_buffer->ptr + src_offset, size);
+        }
+    } else {
+        std::lock_guard<std::recursive_mutex> guard(dst->device->mutex);
+
+        vk_context subctx = ggml_vk_create_temporary_context(dst->device->transfer_queue.cmd_pool);
+        ggml_vk_ctx_begin(dst->device, subctx);
+        for (uint32_t i = 0; i < n_experts; ++i) {
+            ggml_tensor * tensor = experts[i].tensor;
+            ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+            ggml_backend_vk_buffer_context * buf_ctx = (ggml_backend_vk_buffer_context *)buf->context;
+            vk_buffer buffer = buf_ctx->dev_buffer;
+
+            size_t src_offset = experts[i].src_offset;
+            size_t dst_offset = vk_tensor_offset(tensor) + tensor->view_offs + experts[i].dst_offset;
+            size_t size = experts[i].size_per_expert;
+            ggml_vk_buffer_write_2d_async_stg(subctx, buffer, dst_offset, src_offset, reinterpret_cast<vk_buffer_struct *>(src), 0, size, 1);
+        }
+        ggml_vk_ctx_end(subctx);
+        ggml_vk_submit(subctx, dst->device->fence);
+        VK_CHECK(dst->device->device.waitForFences({ dst->device->fence }, true, UINT64_MAX), "vk_buffer_write_2d_stg waitForFences");
         dst->device->device.resetFences({ dst->device->fence });
         ggml_vk_queue_command_pools_cleanup(dst->device);
     }
@@ -8348,7 +8410,7 @@ static bool ggml_vk_should_use_mmvq(const vk_device& device, uint32_t m, uint32_
             case GGML_TYPE_Q4_K:
             case GGML_TYPE_Q5_K:
             case GGML_TYPE_Q8_0:  // MMVQ tg-slower than float path on Xe3 (n>1 pp returns true earlier)
-                return false;
+            return false;
             default:
                 return true;
             }
@@ -10114,42 +10176,42 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
         }
     }
     else {
-        if (split_k > 1) {
-            ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_flash_attn_split_k_reduce, 1);
+    if (split_k > 1) {
+        ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_flash_attn_split_k_reduce, 1);
 
-            if (ctx->prealloc_split_k_need_sync) {
-                ggml_vk_sync_buffers(ctx, subctx);
-            }
-
-            // We reuse workgroups_x to mean the number of splits, so we need to
-            // cancel out the divide by wg_denoms[0].
-            uint32_t dispatch_x;
-            if (gqa_ratio > 1) {
-                workgroups_x *= pipeline->wg_denoms[0];
-                dispatch_x = split_k * workgroups_x;
-            } else {
-                dispatch_x = Tr * split_k * pipeline->wg_denoms[0];
-            }
-
-            vk_subbuffer split_k_buf = ggml_vk_subbuffer(ctx, ctx->prealloc_split_k, 0);
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                        {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf},
-                                        pc, { dispatch_x, workgroups_y, workgroups_z });
-
+        if (ctx->prealloc_split_k_need_sync) {
             ggml_vk_sync_buffers(ctx, subctx);
-            const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr) };
-            ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_flash_attn_split_k_reduce,
-                                        {split_k_buf, sinks_buf, dst_buf},
-                                        pc2, { (uint32_t)ne1, HSV, (uint32_t)(ne2 * ne3) });
-            ctx->prealloc_split_k_need_sync = true;
+        }
+
+        // We reuse workgroups_x to mean the number of splits, so we need to
+        // cancel out the divide by wg_denoms[0].
+        uint32_t dispatch_x;
+        if (gqa_ratio > 1) {
+            workgroups_x *= pipeline->wg_denoms[0];
+            dispatch_x = split_k * workgroups_x;
         } else {
-            if (gqa_ratio > 1) {
-                // When using gqa, we want one actual workgroup per batch, so cancel out wg_denoms
-                workgroups_x *= pipeline->wg_denoms[0];
-            }
-            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                        {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf},
-                                        pc, { workgroups_x, workgroups_y, workgroups_z });
+            dispatch_x = Tr * split_k * pipeline->wg_denoms[0];
+        }
+
+        vk_subbuffer split_k_buf = ggml_vk_subbuffer(ctx, ctx->prealloc_split_k, 0);
+        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+                                    {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf},
+                                    pc, { dispatch_x, workgroups_y, workgroups_z });
+
+        ggml_vk_sync_buffers(ctx, subctx);
+        const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr) };
+        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_flash_attn_split_k_reduce,
+                                    {split_k_buf, sinks_buf, dst_buf},
+                                    pc2, { (uint32_t)ne1, HSV, (uint32_t)(ne2 * ne3) });
+        ctx->prealloc_split_k_need_sync = true;
+    } else {
+        if (gqa_ratio > 1) {
+            // When using gqa, we want one actual workgroup per batch, so cancel out wg_denoms
+            workgroups_x *= pipeline->wg_denoms[0];
+        }
+        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+                                    {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf},
+                                    pc, { workgroups_x, workgroups_y, workgroups_z });
         }
     }
 }
@@ -14563,6 +14625,10 @@ static void ggml_backend_vk_buffer_memset_tensor(ggml_backend_buffer_t buffer, g
     ggml_vk_buffer_memset(buf, vk_tensor_offset(tensor) + tensor->view_offs + offset, val32, size);
 }
 
+static void ggml_backend_vk_buffer_set_expert_tensor(void * data, ggml_expert_tensor * const experts, const uint32_t n_experts) {
+    ggml_vk_buffer_set_expert_tensor(data, experts, n_experts);
+}
+
 static void ggml_backend_vk_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     VK_LOG_DEBUG("ggml_backend_vk_buffer_set_tensor(" << buffer << ", " << tensor << ", " << data << ", " << offset << ", " << size << ")");
     ggml_backend_vk_buffer_context * buf_ctx = (ggml_backend_vk_buffer_context *)buffer->context;
@@ -14644,6 +14710,28 @@ static void ggml_backend_vk_buffer_clear(ggml_backend_buffer_t buffer, uint8_t v
     ggml_vk_buffer_memset(ctx->dev_buffer, 0, value, buffer->size);
 }
 
+static std::vector<vk_buffer> stg_buf_pool;
+static ggml_backend_staging_buffer ggml_backend_vk_staging_buffer_alloc(ggml_backend_buffer_t buffer, size_t size) {
+    vk_device device = ((ggml_backend_vk_buffer_context *)buffer->context)->device.lock();
+    vk_buffer buf = ggml_vk_create_buffer(device, size,
+        {vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostCached,
+         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});  // TODO: This only available on iGPU
+
+    if(!(buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible)) {
+        fprintf(stderr, "WARNING: failed to allocate %.2f MB of pinned memory\n",
+            size/1024.0/1024.0);
+        device->device.freeMemory(buf->device_memory);
+        device->device.destroyBuffer(buf->buffer);
+        return ggml_backend_staging_buffer { nullptr, nullptr };
+    }
+    ggml_backend_staging_buffer rtn;
+    rtn.buff_struct = reinterpret_cast<void *>(buf.get());
+    rtn.buff_ptr = buf->ptr;
+    stg_buf_pool.push_back(buf);
+
+    return rtn;
+}
+
 static ggml_backend_buffer_i ggml_backend_vk_buffer_interface = {
     /* .free_buffer     = */ ggml_backend_vk_buffer_free_buffer,
     /* .get_base        = */ ggml_backend_vk_buffer_get_base,
@@ -14656,6 +14744,8 @@ static ggml_backend_buffer_i ggml_backend_vk_buffer_interface = {
     /* .cpy_tensor      = */ ggml_backend_vk_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_vk_buffer_clear,
     /* .reset           = */ NULL,
+    /* .alloc_stage_buf   = */ ggml_backend_vk_staging_buffer_alloc,
+    /* .expert_tensor_set  = */ ggml_backend_vk_buffer_set_expert_tensor,
 };
 
 // vk buffer type
@@ -14695,6 +14785,21 @@ static size_t ggml_backend_vk_buffer_type_get_alloc_size(ggml_backend_buffer_typ
     return ggml_nbytes(tensor);
 
     UNUSED(buft);
+}
+
+static size_t ggml_backend_vk_buffer_type_max_buft_allocate_size(ggml_backend_buffer_type_t buft, ggml_op op) {
+    ggml_backend_vk_buffer_type_context * ctx = (ggml_backend_vk_buffer_type_context *) buft->context;
+    const vk_device& device = ctx->device;
+
+    // copy from ggml_backend_vk_device_supports_op
+    const bool uses_bda = (op == GGML_OP_IM2COL || op == GGML_OP_IM2COL_3D) &&
+                          device->shader_int64 && device->buffer_device_address;
+
+    if (uses_bda || device->shader_64b_indexing) {
+        return device->max_buffer_size;
+    } else {
+        return std::min(device->max_buffer_size, static_cast<uint64_t>(device->properties.limits.maxStorageBufferRange));
+    }
 }
 
 ggml_backend_buffer_type_t ggml_backend_vk_buffer_type(size_t dev_num) {

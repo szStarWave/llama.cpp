@@ -557,8 +557,6 @@ struct common_params {
     bool no_extra_bufts    = false; // disable extra buffer types (used for weight repacking)
     bool no_host           = false; // bypass host buffer allowing extra buffers to be used
 
-    bool        phison_mode                   = false;
-    std::string phison_offload_path           = "";
     std::string phison_debug_log_path         = "";
     int32_t     phison_ssd_kv_offload_gb      = 0;
     int32_t     phison_dram_kv_offload_gb     = 0;

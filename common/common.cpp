@@ -1177,12 +1177,11 @@ common_init_result::common_init_result(common_params & params) :
 
 #ifdef LLAMA_USE_AIDAPTIV
     if (pimpl->aidaptiv->enabled()) {
-        params.phison_offload_path = pimpl->aidaptiv->offload_path();
         params.phison_debug_log_path = phison_debug_log_path;
         const uint64_t temp_uuid = pimpl->aidaptiv->generate_uuid();
-        mparams.offload_folder         = params.phison_offload_path.c_str();
+        mparams.offload_folder         = pimpl->aidaptiv->offload_path().c_str();
         mparams.temp_uuid              = temp_uuid;
-        cparams.offload_folder         = params.phison_offload_path.c_str();
+        cparams.offload_folder         = pimpl->aidaptiv->offload_path().c_str();
         cparams.temp_uuid              = temp_uuid;
     }
 #endif
@@ -1581,11 +1580,9 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.no_alloc                    = params.no_alloc;
 
 #ifdef LLAMA_USE_AIDAPTIV
-    mparams.offload_folder              = params.phison_mode ? params.phison_offload_path.c_str() : nullptr;
+    mparams.offload_folder              = "";
     mparams.vram_experts_cached_gb      = params.phison_vram_experts_cached_gb > 0 ? (uint32_t) params.phison_vram_experts_cached_gb : 0;
     mparams.dram_experts_cached_gb      = params.phison_dram_experts_cached_gb > 0 ? (uint32_t) params.phison_dram_experts_cached_gb : 0;
-    mparams.vram_experts_per_layer      = -1;
-    mparams.dram_experts_per_layer      = -1;
     mparams.shared_buffer_layers        = 0;
     mparams.temp_uuid                   = 0;
 #endif
@@ -1625,7 +1622,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.kv_unified        = params.kv_unified;
 
 #ifdef LLAMA_USE_AIDAPTIV
-    cparams.offload_folder    = params.phison_mode ? params.phison_offload_path.c_str() : nullptr;
+    cparams.offload_folder    = "";
     cparams.temp_uuid         = 0;
 #endif
 

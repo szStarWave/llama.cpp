@@ -5,6 +5,8 @@
 #include "llama-model.h"
 #include "llama-context.h"
 
+#include "aidaptiv-dispatch.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -2499,4 +2501,34 @@ void llama_kv_cache_context::set_input_k_rot(ggml_tensor * dst) const {
 
 void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
     kv->set_input_v_rot(dst);
+}
+
+size_t llama_kv_cache::get_cache_size(uint64_t node_size) const {
+    return g_aidaptiv->kv_cache_get_cache_size(*this, node_size);
+}
+
+void llama_kv_cache::kv_cache_read(void *               ptr,
+                                   const size_t &       node_stride,
+                                   const uint32_t &     node_size,
+                                   const llama_seq_id & seq_id,
+                                   const llama_pos &    start_pos,
+                                   const size_t &       count,
+                                   const bool           is_last_node,
+                                   const llama_pos *    mrope_pos) {
+    g_aidaptiv->kv_cache_read(*this, ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mrope_pos);
+}
+
+void llama_kv_cache::kv_cache_write(void *               ptr,
+                                    const size_t &       node_stride,
+                                    const uint32_t &     node_size,
+                                    const llama_seq_id & seq_id,
+                                    const llama_pos &    start_pos,
+                                    const size_t &       count,
+                                    const bool           is_last_node,
+                                    const llama_pos *    mrope_pos) {
+    g_aidaptiv->kv_cache_write(*this, ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mrope_pos);
+}
+
+bool llama_kv_cache::is_reusable(const llama_seq_id & seq_id, const size_t & count, bool * reusable) {
+    return g_aidaptiv->is_reusable(*this, seq_id, count, reusable);
 }
