@@ -55,10 +55,10 @@ if (LLAMA_AIDAPTIV)
             $<TARGET_RUNTIME_DLLS:${TARGET}>
             $<TARGET_FILE_DIR:${TARGET}>
         COMMAND_EXPAND_LISTS)
-    if (EXISTS "${AIDAPTIV_ROOT}/ada/ada.exe")
+    if (EXISTS "${AIDAPTIV_ROOT}/aidaptiv/ada/ada.exe")
         add_custom_command(TARGET ${TARGET} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${AIDAPTIV_ROOT}/ada/ada.exe"
+                "${AIDAPTIV_ROOT}/aidaptiv/ada/ada.exe"
                 $<TARGET_FILE_DIR:${TARGET}>)
     endif()
 endif()

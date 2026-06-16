@@ -14,6 +14,8 @@
 #include "llama-memory-hybrid-iswa.h"
 #include "llama-memory-recurrent.h"
 
+#include "aidaptiv-dispatch.h"
+
 #include "models/models.h"
 
 #include "ggml.h"
@@ -962,9 +964,17 @@ llama_model::llama_model(const llama_model_params & params) : params(params), pi
 }
 
 llama_model::~llama_model() {
+    reset_expert_manager(nullptr);
     for (auto * lora : loras) {
         delete lora;
     }
+}
+
+void llama_model::reset_expert_manager(ExpertManager * mgr) {
+    if (expert_mgr != nullptr) {
+        g_aidaptiv->em_destroy(expert_mgr);
+    }
+    expert_mgr = mgr;
 }
 
 void llama_model_base::load_stats(llama_model_loader & ml) {
@@ -1247,6 +1257,15 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     pimpl->dev_output = get_layer_buft_list(n_layer);
 
     const auto TENSOR_NOT_REQUIRED = llama_model_loader::TENSOR_NOT_REQUIRED;
+
+    aidaptiv_moe_offload_params aidaptiv_moe = {};
+    aidaptiv_moe.vram_experts_cached_gb = params.vram_experts_cached_gb;
+    aidaptiv_moe.dram_experts_cached_gb = params.dram_experts_cached_gb;
+    aidaptiv_moe.shared_buffer_layers   = params.shared_buffer_layers;
+    aidaptiv_moe.temp_uuid              = params.temp_uuid;
+    aidaptiv_moe.offload_folder         = params.offload_folder ? params.offload_folder : "";
+
+    g_aidaptiv->model_setup_moe_offload(*this, n_gpu_layers, &aidaptiv_moe);
 
     // create tensors for the weights
     {
@@ -1544,6 +1563,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     for (auto & [ctx, buf_map] : ctx_buf_maps) {
         if (!ml.load_all_data(ctx, buf_map, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
             return false;
+        }
+    }
+
+    if (is_moe_offload_enabled()) {
+        LLAMA_LOG_INFO("[MDW][Info][Runtime] Preload experts... \n");
+        if (expert_mgr == nullptr || !g_aidaptiv->em_preload_experts(expert_mgr)) {
+            LLAMA_LOG_INFO("[MDW][Info][Runtime] Skip preloading experts\n");
         }
     }
 
@@ -2133,16 +2159,12 @@ llama_model_params llama_model_default_params() {
         /*.use_extra_bufts             =*/ true,
         /*.no_host                     =*/ false,
         /*.no_alloc                    =*/ false,
-        /*.requant                     =*/ -1,  // auto: on for qwen35/qwen35moe/gemma4/qwen3
-#ifdef LLAMA_USE_AIDAPTIV
         /*.offload_folder              =*/ nullptr,
         /*.vram_experts_cached_gb      =*/ 0,
         /*.dram_experts_cached_gb      =*/ 0,
-        /*.vram_experts_per_layer      =*/ -1,
-        /*.dram_experts_per_layer      =*/ -1,
         /*.shared_buffer_layers        =*/ 0,
         /*.temp_uuid                   =*/ 0,
-#endif
+        /*.requant                     =*/ -1,  // auto: on for qwen35/qwen35moe/gemma4/qwen3
     };
 
     return result;
@@ -2530,6 +2552,10 @@ llama_model_base::llama_model_base(const struct llama_model_params & params) : l
     TENSOR_SKIP           (llama_model_loader::TENSOR_SKIP),
     TENSOR_SKIP_IF_VIRTUAL(llama_model_loader::TENSOR_SKIP_IF_VIRTUAL) {}
 
+llama_model_base::~llama_model_base() {
+    g_aidaptiv->model_clear_moe_offload(*this);
+}
+
 ggml_tensor * llama_model_base::create_tensor(const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
     GGML_ASSERT(ml != nullptr);
     return create_tensor(*ml, tn, ne, flags);
@@ -2558,4 +2584,24 @@ void llama_model_base::create_tensor_qkv(llama_layer & layer, int bid,
         layer.wk_b = create_tensor(tn(LLM_TENSOR_ATTN_K, "bias", bid), {n_embd_k_}, TENSOR_NOT_REQUIRED);
         layer.wv_b = create_tensor(tn(LLM_TENSOR_ATTN_V, "bias", bid), {n_embd_v_}, TENSOR_NOT_REQUIRED);
     }
+}
+
+bool llama_model_base::need_exclude(uint32_t il) {
+    return g_aidaptiv->model_need_exclude(*this, il);
+}
+
+bool llama_model_base::is_moe_offload_enabled() const {
+    return g_aidaptiv->model_is_moe_offload_enabled(*this);
+}
+
+std::unordered_map<std::string, ggml_tensor *> llama_model_base::distribute_expert_tensor(expert_tensor_params t_list, uint32_t n_layers, const std::function<bool(uint32_t)> &is_moe_layer) {
+    return g_aidaptiv->model_distribute_expert_tensor(*this, std::move(t_list), n_layers, is_moe_layer);
+}
+
+void llama_model_base::offload_expert(expert_tensor_params t_list, uint32_t n_layers, const std::function<bool(uint32_t)> &is_moe_layer, uint32_t n_expert) {
+    g_aidaptiv->model_offload_expert(*this, std::move(t_list), n_layers, is_moe_layer, n_expert);
+}
+
+void llama_model_base::create_expert_manager(std::unordered_map<std::string, ggml_tensor *> &mapping_table, expert_tensor_params t_list, uint32_t n_layers, const std::function<bool(uint32_t)> &is_moe_layer) {
+    g_aidaptiv->model_create_expert_manager(*this, mapping_table, std::move(t_list), n_layers, is_moe_layer);
 }

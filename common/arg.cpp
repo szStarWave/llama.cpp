@@ -2048,20 +2048,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_NO_HOST"));
     add_opt(common_arg(
-        {"--phison-mode"},
-        "enable Phison aiDAPTIV KV/expert cache integration",
-        [](common_params & params) {
-            params.phison_mode = true;
-        }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_MODE"));
-    add_opt(common_arg(
-        {"--phison-offload-path"}, "DIR",
-        "Phison aiDAPTIV offload directory",
-        [](common_params & params, const std::string & value) {
-            params.phison_offload_path = value;
-        }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_OFFLOAD_PATH"));
-    add_opt(common_arg(
         {"--ssd-kv-offload-gb"}, "N",
         "Phison aiDAPTIV SSD KV cache budget in GiB (-1 = auto, 0 = disabled)",
         [](common_params & params, int value) {

@@ -56,14 +56,7 @@ struct common_aidaptiv::impl {
 
 common_aidaptiv::common_aidaptiv(const common_params & params, std::string & resolved_debug_log_path) :
     pimpl(new impl{}) {
-    pimpl->active = params.phison_mode;
-    if (!pimpl->active) {
-        return;
-    }
-
-    if (params.phison_offload_path.empty()) {
-        throw std::runtime_error("--phison-mode requires --phison-offload-path");
-    }
+    pimpl->active = true;
 
     aidaptiv::setup_params setup;
     setup.ssd_kv_offload_gb      = params.phison_ssd_kv_offload_gb;
@@ -73,7 +66,8 @@ common_aidaptiv::common_aidaptiv(const common_params & params, std::string & res
     setup.model_path             = params.model.path;
     setup.mmproj_model_path      = params.mmproj.path;
 
-    pimpl->runtime.reset(new aidaptiv::Aidaptiv(params.phison_offload_path, resolved_debug_log_path, setup));
+    const std::string offload_path;
+    pimpl->runtime.reset(new aidaptiv::Aidaptiv(offload_path, resolved_debug_log_path, setup));
     pimpl->offload_path = pimpl->runtime->offload_path();
 
     LOG_INF("%s: aiDAPTIV enabled, version: %s, offload path: %s\n",
@@ -168,11 +162,8 @@ struct common_aidaptiv::impl {
 
 common_aidaptiv::common_aidaptiv(const common_params & params, std::string & resolved_debug_log_path) :
     pimpl(new impl{}) {
+    GGML_UNUSED(params);
     GGML_UNUSED(resolved_debug_log_path);
-    pimpl->active = params.phison_mode;
-    if (pimpl->active) {
-        throw std::runtime_error("--phison-mode requires a build configured with -DLLAMA_AIDAPTIV=ON");
-    }
 }
 
 common_aidaptiv::~common_aidaptiv() = default;

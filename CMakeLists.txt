@@ -254,6 +254,10 @@ if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS)
     add_subdirectory(tools)
 endif()
 
+if (LLAMA_AIDAPTIV AND LLAMA_BUILD_EXAMPLES)
+    add_subdirectory(aidaptiv/example)
+endif()
+
 # Automatically add all files from the 'licenses' directory
 file(GLOB EXTRA_LICENSES "${CMAKE_SOURCE_DIR}/licenses/LICENSE-*")
 

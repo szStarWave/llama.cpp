@@ -12,6 +12,8 @@
 #include "llama-ext.h"
 #include "llama.h"
 
+#include "aidaptiv-dispatch.h"
+
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -700,6 +702,10 @@ ggml_backend_sched_t llama_context::get_sched() const {
 
 uint32_t llama_context::n_ctx() const {
     return cparams.n_ctx;
+}
+
+bool llama_context::get_fa() const {
+    return cparams.flash_attn;
 }
 
 uint32_t llama_context::n_ctx_seq() const {
@@ -2274,6 +2280,7 @@ llm_graph_params llama_context::graph_params(
             const llama_memory_context_i * mctx,
                           llm_graph_type   gtype) const {
     return {
+        /*.model       =*/ &model,
         /*.arch        =*/ model.arch,
         /*.hparams     =*/ model.hparams,
         /*.cparams     =*/ cparams,
@@ -3471,6 +3478,10 @@ uint32_t llama_n_ctx_seq(const llama_context * ctx) {
     return ctx->n_ctx_seq();
 }
 
+bool llama_flash_attn(const llama_context * ctx) {
+    return ctx->get_fa();
+}
+
 uint32_t llama_n_batch(const llama_context * ctx) {
     return ctx->n_batch();
 }
@@ -3782,6 +3793,84 @@ bool llama_memory_can_shift(llama_memory_t mem) {
     }
 
     return mem->get_can_shift();
+}
+
+uint32_t llama_memory_size(llama_memory_t mem) {
+    if (!mem) {
+        return 0;
+    }
+
+    return mem->get_size();
+}
+
+size_t llama_memory_kv_cache_size(llama_memory_t mem, uint64_t node_size) {
+    if (!mem) {
+        return 0;
+    }
+    return mem->get_cache_size(node_size);
+}
+
+bool llama_memory_is_reusable(llama_memory_t mem, const llama_seq_id seq_id, const size_t count, bool* reusable) {
+    if (!mem) {
+        return false;
+    }
+
+    memset(reusable, true, count * sizeof(bool));
+    return mem->is_reusable(seq_id, count, reusable);
+}
+
+void llama_memory_kv_read(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, const llama_pos * mrope_pos) {
+    if (!mem || count == 0) {
+        return;
+    }
+    mem->kv_cache_read(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mrope_pos);
+}
+
+
+void llama_memory_kv_write(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, const llama_pos * mrope_pos) {
+    if (!mem || count == 0) {
+        return;
+    }
+    mem->kv_cache_write(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mrope_pos);
+}
+
+float llama_moe_get_prefill_vram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_prefill_vram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_prefill_dram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_prefill_dram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_decode_vram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_decode_vram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_decode_dram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_decode_dram_hit_rate(model->expert_mgr);
+}
+
+void llama_moe_reset_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model != nullptr && model->expert_mgr != nullptr) {
+        g_aidaptiv->em_reset_hit_rate(model->expert_mgr);
+    }
 }
 
 // llama state API
