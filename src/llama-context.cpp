@@ -24,6 +24,21 @@
 // llama_context
 //
 
+static uint32_t llama_turbo_pad_head_dim(uint32_t n) {
+    if (n <= 1) {
+        return 128;
+    }
+
+    --n;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+
+    return std::max(128u, n + 1);
+}
+
 static llm_graph_type ctx_type_to_graph_type(llama_context_type ctx_type) {
     switch (ctx_type) {
         case LLAMA_CONTEXT_TYPE_DEFAULT: return LLM_GRAPH_TYPE_DEFAULT;
@@ -3409,6 +3424,10 @@ llama_context * llama_init_from_model(
         return nullptr;
     }
 
+    const bool kv_cache_turbo =
+        params.type_k == GGML_TYPE_TURBO3_0 || params.type_k == GGML_TYPE_TURBO4_0 ||
+        params.type_v == GGML_TYPE_TURBO3_0 || params.type_v == GGML_TYPE_TURBO4_0;
+
     if (params.n_batch == 0 && params.n_ubatch == 0) {
         LLAMA_LOG_ERROR("%s: n_batch and n_ubatch cannot both be zero\n", __func__);
         return nullptr;
@@ -3422,6 +3441,16 @@ llama_context * llama_init_from_model(
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && model->arch == LLM_ARCH_GROK) {
         LLAMA_LOG_WARN("%s: flash_attn is not compatible with Grok - forcing off\n", __func__);
         params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
+
+    if (kv_cache_turbo && model->arch == LLM_ARCH_GROK) {
+        LLAMA_LOG_ERROR("%s: turbo KV cache requires flash_attn, which is not compatible with Grok\n", __func__);
+        return nullptr;
+    }
+
+    if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED && kv_cache_turbo) {
+        LLAMA_LOG_WARN("%s: turbo KV cache requires flash_attn - enabling automatically\n", __func__);
+        params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
     }
 
     if (model->split_mode() == LLAMA_SPLIT_MODE_TENSOR) {
@@ -3438,7 +3467,11 @@ llama_context * llama_init_from_model(
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && ggml_is_quantized(params.type_k)) {
         const uint32_t blck_size = ggml_blck_size(params.type_k);
         for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) {
-            if (model->hparams.n_embd_head_k(il) % blck_size != 0) {
+            uint32_t n_embd_head_k = model->hparams.n_embd_head_k(il);
+            if ((params.type_k == GGML_TYPE_TURBO3_0 || params.type_k == GGML_TYPE_TURBO4_0)) {
+                n_embd_head_k = llama_turbo_pad_head_dim(n_embd_head_k);
+            }
+            if (n_embd_head_k % blck_size != 0) {
                 LLAMA_LOG_ERROR("%s: K cache type %s with block size %u does not divide n_embd_head_k=%u\n",
                     __func__, ggml_type_name(params.type_k), blck_size, model->hparams.n_embd_head_k(il));
                 return nullptr;
@@ -3449,7 +3482,11 @@ llama_context * llama_init_from_model(
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && ggml_is_quantized(params.type_v)) {
         const uint32_t blck_size = ggml_blck_size(params.type_v);
         for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) {
-            if (model->hparams.n_embd_head_v(il) % blck_size != 0) {
+            uint32_t n_embd_head_v = model->hparams.n_embd_head_v(il);
+            if ((params.type_v == GGML_TYPE_TURBO3_0 || params.type_v == GGML_TYPE_TURBO4_0)) {
+                n_embd_head_v = llama_turbo_pad_head_dim(n_embd_head_v);
+            }
+            if (n_embd_head_v % blck_size != 0) {
                 LLAMA_LOG_ERROR("%s: V cache type %s with block size %u does not divide n_embd_head_v=%u\n",
                     __func__, ggml_type_name(params.type_v), blck_size, model->hparams.n_embd_head_v(il));
                 return nullptr;

@@ -277,6 +277,25 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
+// TurboQuant 3-bit KV cache block. One 128-element WHT group is stored as a
+// single block with a shared L2 norm and 3-bit centroid indices.
+#define QK_TURBO3 128
+typedef struct {
+    ggml_half norm;
+    uint8_t qs[QK_TURBO3 / 4];    // low 2 bits of centroid index
+    uint8_t signs[QK_TURBO3 / 8]; // high bit of centroid index
+} block_turbo3_0;
+static_assert(sizeof(block_turbo3_0) == sizeof(ggml_half) + QK_TURBO3 / 4 + QK_TURBO3 / 8, "wrong turbo3_0 block size/padding");
+
+// TurboQuant 4-bit KV cache block. One 128-element WHT group is stored as a
+// single block with a shared L2 norm and 4-bit centroid indices.
+#define QK_TURBO4 128
+typedef struct {
+    ggml_half norm;
+    uint8_t qs[QK_TURBO4 / 2];
+} block_turbo4_0;
+static_assert(sizeof(block_turbo4_0) == sizeof(ggml_half) + QK_TURBO4 / 2, "wrong turbo4_0 block size/padding");
+
 //
 // Super-block quantization structures
 //

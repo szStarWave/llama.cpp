@@ -208,6 +208,103 @@ void quantize(uint dst_idx, uint src_idx)
 }
 #endif
 
+#if defined(DATA_A_TURBO3_0)
+const float turbo3_centroids[8] = float[8](
+    -0.157341f, -0.108589f, -0.072199f, -0.035979f,
+     0.035979f,  0.072199f,  0.108589f,  0.157341f
+);
+
+uint nearest_turbo3_centroid(float v) {
+    uint best = 0;
+    float best_dist = abs(v - turbo3_centroids[0]);
+    [[unroll]] for (uint i = 1; i < 8; ++i) {
+        const float dist = abs(v - turbo3_centroids[i]);
+        if (dist < best_dist) {
+            best = i;
+            best_dist = dist;
+        }
+    }
+    return best;
+}
+
+void quantize(uint dst_idx, uint src_idx)
+{
+    float norm_sq = 0.0;
+
+    [[unroll]] for (int j = 0; j < QUANT_K_TURBO3_0; ++j) {
+        const float v = data_s[src_idx + j];
+        norm_sq += v * v;
+    }
+
+    const float norm = sqrt(norm_sq);
+    const float inv_norm = norm > 0.0 ? 1.0 / norm : 0.0;
+
+    data_q[dst_idx].norm = float16_t(norm);
+
+    [[unroll]] for (int j = 0; j < QUANT_K_TURBO3_0 / 4; ++j) {
+        data_q[dst_idx].qs[j] = uint8_t(0);
+    }
+
+    [[unroll]] for (int j = 0; j < QUANT_K_TURBO3_0 / 8; ++j) {
+        data_q[dst_idx].signs[j] = uint8_t(0);
+    }
+
+    [[unroll]] for (int j = 0; j < QUANT_K_TURBO3_0; ++j) {
+        const uint idx = nearest_turbo3_centroid(data_s[src_idx + j] * inv_norm);
+        data_q[dst_idx].qs[j / 4] |= uint8_t((idx & 0x3u) << (2 * (j % 4)));
+        if ((idx & 0x4u) != 0u) {
+            data_q[dst_idx].signs[j / 8] |= uint8_t(1 << (j % 8));
+        }
+    }
+}
+#endif
+
+#if defined(DATA_A_TURBO4_0)
+const float turbo4_centroids[16] = float[16](
+    -0.167095f, -0.140354f, -0.118461f, -0.098574f,
+    -0.079895f, -0.061921f, -0.044317f, -0.026836f,
+     0.026836f,  0.044317f,  0.061921f,  0.079895f,
+     0.098574f,  0.118461f,  0.140354f,  0.167095f
+);
+
+uint nearest_turbo4_centroid(float v) {
+    uint best = 0;
+    float best_dist = abs(v - turbo4_centroids[0]);
+    [[unroll]] for (uint i = 1; i < 16; ++i) {
+        const float dist = abs(v - turbo4_centroids[i]);
+        if (dist < best_dist) {
+            best = i;
+            best_dist = dist;
+        }
+    }
+    return best;
+}
+
+void quantize(uint dst_idx, uint src_idx)
+{
+    float norm_sq = 0.0;
+
+    [[unroll]] for (int j = 0; j < QUANT_K_TURBO4_0; ++j) {
+        const float v = data_s[src_idx + j];
+        norm_sq += v * v;
+    }
+
+    const float norm = sqrt(norm_sq);
+    const float inv_norm = norm > 0.0 ? 1.0 / norm : 0.0;
+
+    data_q[dst_idx].norm = float16_t(norm);
+
+    [[unroll]] for (int j = 0; j < QUANT_K_TURBO4_0 / 2; ++j) {
+        data_q[dst_idx].qs[j] = uint8_t(0);
+    }
+
+    [[unroll]] for (int j = 0; j < QUANT_K_TURBO4_0; ++j) {
+        const uint idx = nearest_turbo4_centroid(data_s[src_idx + j] * inv_norm);
+        data_q[dst_idx].qs[j / 2] |= uint8_t((idx & 0xfu) << (4 * (j % 2)));
+    }
+}
+#endif
+
 #if defined(DATA_A_IQ4_NL)
 uint best_index(float x) {
     if (x <= kvalues_iq4nl[0]) return 0;

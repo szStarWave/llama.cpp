@@ -143,6 +143,59 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_TURBO3_0)
+const float turbo3_centroids[8] = float[8](
+    -0.157341f, -0.108589f, -0.072199f, -0.035979f,
+     0.035979f,  0.072199f,  0.108589f,  0.157341f
+);
+
+float dequantize_turbo3_value(uint ib, uint i, uint a_offset) {
+    const uint low2 = (uint(data_a[a_offset + ib].qs[i / 4u]) >> (2u * (i % 4u))) & 0x3u;
+    const uint high = (uint(data_a[a_offset + ib].signs[i / 8u]) >> (i % 8u)) & 0x1u;
+    return turbo3_centroids[low2 | (high << 2u)];
+}
+
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(
+        dequantize_turbo3_value(ib, iqs, a_offset),
+        dequantize_turbo3_value(ib, iqs + 1u, a_offset));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(
+        dequantize_turbo3_value(ib, iqs, a_offset),
+        dequantize_turbo3_value(ib, iqs + 1u, a_offset),
+        dequantize_turbo3_value(ib, iqs + 2u, a_offset),
+        dequantize_turbo3_value(ib, iqs + 3u, a_offset));
+}
+#endif
+
+#if defined(DATA_A_TURBO4_0)
+const float turbo4_centroids[16] = float[16](
+    -0.167095f, -0.140354f, -0.118461f, -0.098574f,
+    -0.079895f, -0.061921f, -0.044317f, -0.026836f,
+     0.026836f,  0.044317f,  0.061921f,  0.079895f,
+     0.098574f,  0.118461f,  0.140354f,  0.167095f
+);
+
+float dequantize_turbo4_value(uint ib, uint i, uint a_offset) {
+    const uint idx = (uint(data_a[a_offset + ib].qs[i / 2u]) >> (4u * (i % 2u))) & 0xfu;
+    return turbo4_centroids[idx];
+}
+
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(
+        dequantize_turbo4_value(ib, iqs, a_offset),
+        dequantize_turbo4_value(ib, iqs + 1u, a_offset));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(
+        dequantize_turbo4_value(ib, iqs, a_offset),
+        dequantize_turbo4_value(ib, iqs + 1u, a_offset),
+        dequantize_turbo4_value(ib, iqs + 2u, a_offset),
+        dequantize_turbo4_value(ib, iqs + 3u, a_offset));
+}
+#endif
+
 #if defined(DATA_A_IQ1_S)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint ib32 = iqs / 32;
@@ -526,6 +579,12 @@ vec2 get_dm(uint ib, uint a_offset) {
 #if defined(DATA_A_Q4_0) || defined(DATA_A_Q5_0) || defined(DATA_A_Q8_0) || defined(DATA_A_IQ1_S) || defined(DATA_A_IQ2_XXS) || defined(DATA_A_IQ2_XS) || defined(DATA_A_IQ2_S) || defined(DATA_A_IQ3_XXS) || defined(DATA_A_IQ3_S) || defined(DATA_A_IQ4_XS) || defined(DATA_A_IQ4_NL)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(float(data_a[a_offset + ib].d), 0);
+}
+#endif
+
+#if defined(DATA_A_TURBO3_0) || defined(DATA_A_TURBO4_0)
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].norm), 0);
 }
 #endif
 

@@ -7,6 +7,7 @@
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
 #include "quants.h"
+#include "ggml-quants.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
 #include "binary-ops.h"
@@ -208,6 +209,13 @@ typedef pthread_t ggml_thread_t;
 #include <TargetConditionals.h>
 #endif
 
+static void ggml_vec_dot_turbo3_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_turbo4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc);
+
 static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_F32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_fp32,
@@ -400,6 +408,18 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
+    [GGML_TYPE_TURBO3_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_turbo3_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_turbo3_0_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_TURBO4_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_turbo4_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_turbo4_0_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
     [GGML_TYPE_I32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
     },
@@ -407,6 +427,52 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
 
 const struct ggml_type_traits_cpu * ggml_get_type_traits_cpu(enum ggml_type type) {
     return &type_traits_cpu[type];
+}
+
+static void ggml_vec_dot_turbo3_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+
+    float * tmp = (float *) malloc((size_t) n * sizeof(float));
+    GGML_ASSERT(tmp != NULL);
+
+    dequantize_row_turbo3_0((const block_turbo3_0 *) vx, tmp, n);
+
+    const float * y = (const float *) vy;
+    float sum = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        sum += tmp[i] * y[i];
+    }
+
+    free(tmp);
+    *s = sum;
+}
+
+static void ggml_vec_dot_turbo4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs);
+    GGML_UNUSED(bx);
+    GGML_UNUSED(by);
+
+    float * tmp = (float *) malloc((size_t) n * sizeof(float));
+    GGML_ASSERT(tmp != NULL);
+
+    dequantize_row_turbo4_0((const block_turbo4_0 *) vx, tmp, n);
+
+    const float * y = (const float *) vy;
+    float sum = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        sum += tmp[i] * y[i];
+    }
+
+    free(tmp);
+    *s = sum;
 }
 
 //
