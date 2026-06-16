@@ -27,6 +27,10 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1 { block_q5_1_packed16 data[];
 layout (binding = 2) readonly buffer V_PACKED_Q5_1 { block_q5_1_packed16 data[]; } v_packed_q5_1;
 layout (binding = 1) readonly buffer K_PACKED_Q8_0 { block_q8_0_packed16 data[]; } k_packed_q8_0;
 layout (binding = 2) readonly buffer V_PACKED_Q8_0 { block_q8_0_packed16 data[]; } v_packed_q8_0;
+layout (binding = 1) readonly buffer K_PACKED_TURBO3_0 { block_turbo3_0_packed16 data[]; } k_packed_turbo3_0;
+layout (binding = 2) readonly buffer V_PACKED_TURBO3_0 { block_turbo3_0_packed16 data[]; } v_packed_turbo3_0;
+layout (binding = 1) readonly buffer K_PACKED_TURBO4_0 { block_turbo4_0_packed16 data[]; } k_packed_turbo4_0;
+layout (binding = 2) readonly buffer V_PACKED_TURBO4_0 { block_turbo4_0_packed16 data[]; } v_packed_turbo4_0;
 
 // Q4_1 and Q5_1 packed32 views: aliased to the same memory as the packed16
 // views, used by the MMQ K-side hot path for fast 4-uint loads.
@@ -99,6 +103,69 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
     return FLOAT_TYPE(BUF.data[a_offset + ib].d) * FLOAT_TYPEV4(v0.x, v0.y, v1.x, v1.y);          \
 }
 
+#define FA_TURBO3_CENTROID(IDX)                                                                   \
+    ((IDX) == 0u ? FLOAT_TYPE(-0.157341f) :                                                       \
+     (IDX) == 1u ? FLOAT_TYPE(-0.108589f) :                                                       \
+     (IDX) == 2u ? FLOAT_TYPE(-0.072199f) :                                                       \
+     (IDX) == 3u ? FLOAT_TYPE(-0.035979f) :                                                       \
+     (IDX) == 4u ? FLOAT_TYPE( 0.035979f) :                                                       \
+     (IDX) == 5u ? FLOAT_TYPE( 0.072199f) :                                                       \
+     (IDX) == 6u ? FLOAT_TYPE( 0.108589f) : FLOAT_TYPE(0.157341f))
+
+#define FA_TURBO3_BYTE(ARR, BYTE_IDX)                                                            \
+    ((uint(ARR[(BYTE_IDX) / 2u]) >> (8u * ((BYTE_IDX) & 1u))) & 0xffu)
+
+#define FA_TURBO3_IDX(BUF, IDX)                                                                   \
+    (((FA_TURBO3_BYTE(BUF.data[a_offset + ib].qs, (IDX) / 4u) >> (2u * ((IDX) % 4u))) & 0x3u) |   \
+     (((FA_TURBO3_BYTE(BUF.data[a_offset + ib].signs, (IDX) / 8u) >> ((IDX) % 8u)) & 0x1u) << 2u))
+
+#define FA_DEQUANT4_TURBO3_0(BUF) {                                                               \
+    const uint idx0 = iqs + 0u;                                                                   \
+    const uint idx1 = iqs + 1u;                                                                   \
+    const uint idx2 = iqs + 2u;                                                                   \
+    const uint idx3 = iqs + 3u;                                                                   \
+    return FLOAT_TYPE(BUF.data[a_offset + ib].norm) * FLOAT_TYPEV4(                               \
+        FA_TURBO3_CENTROID(FA_TURBO3_IDX(BUF, idx0)),                                             \
+        FA_TURBO3_CENTROID(FA_TURBO3_IDX(BUF, idx1)),                                             \
+        FA_TURBO3_CENTROID(FA_TURBO3_IDX(BUF, idx2)),                                             \
+        FA_TURBO3_CENTROID(FA_TURBO3_IDX(BUF, idx3)));                                            \
+}
+
+#define FA_TURBO4_CENTROID(IDX)                                                                   \
+    ((IDX) ==  0u ? FLOAT_TYPE(-0.167095f) :                                                      \
+     (IDX) ==  1u ? FLOAT_TYPE(-0.140354f) :                                                      \
+     (IDX) ==  2u ? FLOAT_TYPE(-0.118461f) :                                                      \
+     (IDX) ==  3u ? FLOAT_TYPE(-0.098574f) :                                                      \
+     (IDX) ==  4u ? FLOAT_TYPE(-0.079895f) :                                                      \
+     (IDX) ==  5u ? FLOAT_TYPE(-0.061921f) :                                                      \
+     (IDX) ==  6u ? FLOAT_TYPE(-0.044317f) :                                                      \
+     (IDX) ==  7u ? FLOAT_TYPE(-0.026836f) :                                                      \
+     (IDX) ==  8u ? FLOAT_TYPE( 0.026836f) :                                                      \
+     (IDX) ==  9u ? FLOAT_TYPE( 0.044317f) :                                                      \
+     (IDX) == 10u ? FLOAT_TYPE( 0.061921f) :                                                      \
+     (IDX) == 11u ? FLOAT_TYPE( 0.079895f) :                                                      \
+     (IDX) == 12u ? FLOAT_TYPE( 0.098574f) :                                                      \
+     (IDX) == 13u ? FLOAT_TYPE( 0.118461f) :                                                      \
+     (IDX) == 14u ? FLOAT_TYPE( 0.140354f) : FLOAT_TYPE(0.167095f))
+
+#define FA_TURBO4_BYTE(ARR, BYTE_IDX)                                                            \
+    ((uint(ARR[(BYTE_IDX) / 2u]) >> (8u * ((BYTE_IDX) & 1u))) & 0xffu)
+
+#define FA_TURBO4_IDX(BUF, IDX)                                                                   \
+    ((FA_TURBO4_BYTE(BUF.data[a_offset + ib].qs, (IDX) / 2u) >> (4u * ((IDX) & 1u))) & 0xfu)
+
+#define FA_DEQUANT4_TURBO4_0(BUF) {                                                               \
+    const uint idx0 = iqs + 0u;                                                                   \
+    const uint idx1 = iqs + 1u;                                                                   \
+    const uint idx2 = iqs + 2u;                                                                   \
+    const uint idx3 = iqs + 3u;                                                                   \
+    return FLOAT_TYPE(BUF.data[a_offset + ib].norm) * FLOAT_TYPEV4(                               \
+        FA_TURBO4_CENTROID(FA_TURBO4_IDX(BUF, idx0)),                                             \
+        FA_TURBO4_CENTROID(FA_TURBO4_IDX(BUF, idx1)),                                             \
+        FA_TURBO4_CENTROID(FA_TURBO4_IDX(BUF, idx2)),                                             \
+        FA_TURBO4_CENTROID(FA_TURBO4_IDX(BUF, idx3)));                                            \
+}
+
 FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         switch (FaTypeK) {
@@ -108,6 +175,8 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q5_0: FA_DEQUANT4_Q5_0(k_packed_q5_0)
             case FA_TYPE_Q5_1: FA_DEQUANT4_Q5_1(k_packed_q5_1)
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(k_packed_q8_0)
+            case FA_TYPE_TURBO3_0: FA_DEQUANT4_TURBO3_0(k_packed_turbo3_0)
+            case FA_TYPE_TURBO4_0: FA_DEQUANT4_TURBO4_0(k_packed_turbo4_0)
         }
     } else {
         switch (FaTypeV) {
@@ -117,6 +186,8 @@ FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
             case FA_TYPE_Q5_0: FA_DEQUANT4_Q5_0(v_packed_q5_0)
             case FA_TYPE_Q5_1: FA_DEQUANT4_Q5_1(v_packed_q5_1)
             case FA_TYPE_Q8_0: FA_DEQUANT4_Q8_0(v_packed_q8_0)
+            case FA_TYPE_TURBO3_0: FA_DEQUANT4_TURBO3_0(v_packed_turbo3_0)
+            case FA_TYPE_TURBO4_0: FA_DEQUANT4_TURBO4_0(v_packed_turbo4_0)
         }
     }
     return FLOAT_TYPEV4(0);

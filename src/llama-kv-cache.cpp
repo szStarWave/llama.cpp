@@ -16,7 +16,22 @@
 #include <stdexcept>
 
 static bool ggml_is_power_of_2(int n) {
-    return (n & (n - 1)) == 0;
+    return n > 0 && (n & (n - 1)) == 0;
+}
+
+static uint32_t llama_next_power_of_2(uint32_t n) {
+    if (n <= 1) {
+        return 1;
+    }
+
+    --n;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+
+    return n + 1;
 }
 
 // orthonormal Walsh-Hadamard rotation matrix
@@ -67,12 +82,26 @@ static ggml_tensor * ggml_mul_mat_aux(
 
     ggml_tensor * res;
 
+    if (cur->ne[0] % n != 0) {
+        cur = ggml_pad(ctx, cur, GGML_PAD(cur->ne[0], n) - cur->ne[0], 0, 0, 0);
+    }
+
     res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);
     res = ggml_mul_mat   (ctx, rot, res);
     ggml_mul_mat_set_hint(res, GGML_HINT_SRC0_IS_HADAMARD);
     res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
 
     return res;
+}
+
+static bool llama_kv_cache_type_is_turbo(ggml_type type) {
+    return type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0;
+}
+
+static constexpr uint32_t LLAMA_KV_TURBO_BLOCK = 128;
+
+static uint32_t llama_kv_cache_turbo_pad(uint32_t n) {
+    return std::max(LLAMA_KV_TURBO_BLOCK, llama_next_power_of_2(n));
 }
 
 //
@@ -185,8 +214,32 @@ llama_kv_cache::llama_kv_cache(
         }
 
         // [TAG_V_CACHE_VARIABLE]
-        const uint32_t n_embd_k_gqa =            hparams.n_embd_k_gqa(il);
-        const uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
+        uint32_t n_embd_k_gqa =            hparams.n_embd_k_gqa(il);
+        uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
+
+        if (llama_kv_cache_type_is_turbo(type_k)) {
+            const uint32_t n_embd_head_k = hparams.n_embd_head_k(il);
+            if (n_embd_head_k % LLAMA_KV_TURBO_BLOCK != 0) {
+                const uint32_t n_head_kv = n_embd_k_gqa / n_embd_head_k;
+                n_embd_k_gqa = n_head_kv * llama_kv_cache_turbo_pad(n_embd_head_k);
+                if (il == 0) {
+                    LLAMA_LOG_INFO("%s: %s K cache pads head dim %u -> %u\n",
+                            __func__, ggml_type_name(type_k), n_embd_head_k, llama_kv_cache_turbo_pad(n_embd_head_k));
+                }
+            }
+        }
+
+        if (llama_kv_cache_type_is_turbo(type_v) && !is_mla) {
+            const uint32_t n_embd_head_v = hparams.n_embd_head_v(il);
+            if (n_embd_head_v % LLAMA_KV_TURBO_BLOCK != 0) {
+                const uint32_t n_head_kv = n_embd_v_gqa / n_embd_head_v;
+                n_embd_v_gqa = n_head_kv * llama_kv_cache_turbo_pad(n_embd_head_v);
+                if (il == 0) {
+                    LLAMA_LOG_INFO("%s: %s V cache pads head dim %u -> %u\n",
+                            __func__, ggml_type_name(type_v), n_embd_head_v, llama_kv_cache_turbo_pad(n_embd_head_v));
+                }
+            }
+        }
 
         const char * dev_name = "CPU";
 
@@ -293,13 +346,15 @@ llama_kv_cache::llama_kv_cache(
         !attn_rot_disable &&
         n_embd_head_k_all > 0 &&
         ggml_is_quantized(type_k) &&
-        hparams.n_embd_head_k() % 64 == 0;
+        (llama_kv_cache_type_is_turbo(type_k) ||
+         (!llama_kv_cache_type_is_turbo(type_k) && hparams.n_embd_head_k() % 64 == 0));
 
     attn_rot_v =
         !attn_rot_disable &&
         n_embd_head_v_all > 0 &&
         ggml_is_quantized(type_v) &&
-        hparams.n_embd_head_v() % 64 == 0;
+        (llama_kv_cache_type_is_turbo(type_v) ||
+         (!llama_kv_cache_type_is_turbo(type_v) && hparams.n_embd_head_v() % 64 == 0));
 
     LLAMA_LOG_INFO("%s: attn_rot_k = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_k, n_embd_head_k_all);
     LLAMA_LOG_INFO("%s: attn_rot_v = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_v, n_embd_head_v_all);
@@ -307,7 +362,14 @@ llama_kv_cache::llama_kv_cache(
     // pre-compute the haramard matrices and keep them in host memory
     // TODO: in the future, we can make copies in the backend buffers to avoid host -> device transfers
     if (attn_rot_k || attn_rot_v) {
-        for (int64_t n = 64; n <= std::max(n_embd_head_k_all, n_embd_head_v_all); n *= 2) {
+        int32_t n_rot_max = std::max(n_embd_head_k_all, n_embd_head_v_all);
+        if (llama_kv_cache_type_is_turbo(type_k)) {
+            n_rot_max = std::max<int32_t>(n_rot_max, llama_kv_cache_turbo_pad(hparams.n_embd_head_k()));
+        }
+        if (llama_kv_cache_type_is_turbo(type_v)) {
+            n_rot_max = std::max<int32_t>(n_rot_max, llama_kv_cache_turbo_pad(hparams.n_embd_head_v()));
+        }
+        for (int64_t n = 64; n <= n_rot_max; n *= 2) {
             attn_rot_hadamard[n] = std::vector<float>(n*n);
 
             ggml_init_params params = {
@@ -1152,13 +1214,21 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     const uint64_t kv_size      = get_size();
     const uint64_t n_embd_k_gqa = k->ne[0];
 
-    assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
+    const bool k_is_turbo = llama_kv_cache_type_is_turbo(k->type);
+    if (k_is_turbo) {
+        assert(n_embd_k_gqa >= hparams.n_embd_k_gqa(il));
+    } else {
+        assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
+    }
+
+    const uint32_t n_embd_head_k = hparams.n_embd_head_k(il);
+    const uint32_t n_embd_head_k_eff = k_is_turbo ? llama_kv_cache_turbo_pad(n_embd_head_k) : n_embd_head_k;
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 
     return ggml_view_4d(ctx, k,
-            hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
-            ggml_row_size(k->type, hparams.n_embd_head_k(il)),
+            n_embd_head_k_eff, hparams.n_head_kv(il), n_kv, ns,
+            ggml_row_size(k->type, n_embd_head_k_eff),
             ggml_row_size(k->type, n_embd_k_gqa),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size)*sinfo.s0);
@@ -1175,13 +1245,17 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
     // [TAG_V_CACHE_VARIABLE]
     assert(n_embd_v_gqa >= hparams.n_embd_v_gqa(il));
 
+    const bool v_is_turbo = llama_kv_cache_type_is_turbo(v->type);
+    const uint32_t n_embd_head_v = hparams.n_embd_head_v(il);
+    const uint32_t n_embd_head_v_eff = v_is_turbo ? llama_kv_cache_turbo_pad(n_embd_head_v) : n_embd_head_v;
+
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 
     if (!v_trans) {
         // note: v->nb[1] <= v->nb[2]
         return ggml_view_4d(ctx, v,
-                hparams.n_embd_head_v(il), hparams.n_head_kv(il), n_kv, ns,
-                ggml_row_size(v->type, hparams.n_embd_head_v(il)),          // v->nb[1]
+                n_embd_head_v_eff, hparams.n_head_kv(il), n_kv, ns,
+                ggml_row_size(v->type, n_embd_head_v_eff),              // v->nb[1]
                 ggml_row_size(v->type, n_embd_v_gqa),                   // v->nb[2]
                 ggml_row_size(v->type, n_embd_v_gqa*kv_size),           // v->nb[3]
                 ggml_row_size(v->type, n_embd_v_gqa*kv_size)*sinfo.s0);
@@ -1189,8 +1263,8 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
 
     // note: v->nb[1] > v->nb[2]
     return ggml_view_4d(ctx, v,
-            n_kv, hparams.n_head_kv(il), hparams.n_embd_head_v(il), ns,
-            ggml_row_size(v->type, kv_size*hparams.n_embd_head_v(il)),  // v->nb[1]
+            n_kv, hparams.n_head_kv(il), n_embd_head_v_eff, ns,
+            ggml_row_size(v->type, kv_size*n_embd_head_v_eff),          // v->nb[1]
             ggml_row_size(v->type, kv_size),                        // v->nb[2]
             ggml_row_size(v->type, kv_size*n_embd_v_gqa),           // v->nb[3]
             ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
@@ -1203,9 +1277,16 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
 
     ggml_tensor * k = layers[ikv].k;
 
-    const int64_t n_embd_head = k_cur->ne[0];
+    int64_t n_embd_head = k_cur->ne[0];
     const int64_t n_head      = k_cur->ne[1];
     const int64_t n_tokens    = k_cur->ne[2];
+
+    const bool k_is_turbo = llama_kv_cache_type_is_turbo(k->type);
+    if (k_is_turbo && n_embd_head % LLAMA_KV_TURBO_BLOCK != 0) {
+        const int64_t n_pad = llama_kv_cache_turbo_pad((uint32_t) n_embd_head) - n_embd_head;
+        k_cur = ggml_pad(ctx, k_cur, n_pad, 0, 0, 0);
+        n_embd_head = k_cur->ne[0];
+    }
 
     const int64_t n_embd_gqa = n_embd_head*n_head;
 
@@ -1238,9 +1319,16 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
 
     auto * v = layers[ikv].v;
 
-    const int64_t n_embd_head = v_cur->ne[0];
+    int64_t n_embd_head = v_cur->ne[0];
     const int64_t n_head      = v_cur->ne[1];
     const int64_t n_tokens    = v_cur->ne[2];
+
+    const bool v_is_turbo = llama_kv_cache_type_is_turbo(v->type);
+    if (v_is_turbo && n_embd_head % LLAMA_KV_TURBO_BLOCK != 0) {
+        const int64_t n_pad = llama_kv_cache_turbo_pad((uint32_t) n_embd_head) - n_embd_head;
+        v_cur = ggml_pad(ctx, v_cur, n_pad, 0, 0, 0);
+        n_embd_head = v_cur->ne[0];
+    }
 
     const int64_t n_embd_gqa = n_embd_head*n_head;
 
@@ -1317,14 +1405,16 @@ ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
     ggml_tensor * res = nullptr;
 
     if (attn_rot_k) {
-        int nrot = 64;
+        int nrot = llama_kv_cache_type_is_turbo(type_k()) ? llama_kv_cache_turbo_pad(hparams.n_embd_head_k()) : 64;
 
-        // TODO: investigate if using the smallest rotation matrix is beneficial also for K (similar as for V)
-        // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
-        do {
-            nrot *= 2;
-        } while (n_embd_head_k_all % nrot == 0);
-        nrot /= 2;
+        if (!llama_kv_cache_type_is_turbo(type_k())) {
+            // TODO: investigate if using the smallest rotation matrix is beneficial also for K (similar as for V)
+            // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
+            do {
+                nrot *= 2;
+            } while (n_embd_head_k_all % nrot == 0);
+            nrot /= 2;
+        }
 
         res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);
         ggml_set_input(res);
@@ -1338,7 +1428,7 @@ ggml_tensor * llama_kv_cache::build_input_v_rot(ggml_context * ctx) const {
     ggml_tensor * res = nullptr;
 
     if (attn_rot_v) {
-        int nrot = 64;
+        int nrot = llama_kv_cache_type_is_turbo(type_v()) ? llama_kv_cache_turbo_pad(hparams.n_embd_head_v()) : 64;
         // using smaller rotation matrices for V seems beneficial
         // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4146397570
         //do {

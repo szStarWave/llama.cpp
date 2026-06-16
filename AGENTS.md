@@ -55,7 +55,7 @@ AI-generated code may be accepted if you (1) fully understand the output, (2) ca
 
 The following will result in immediate PR closure:
 
-- **AI-written PR descriptions or commit messages** - these are typically recognizable and waste reviewer time
+- **AI-written PR descriptions** - these are typically recognizable and waste reviewer time
 - **AI-generated responses to reviewer comments** - this undermines the human-to-human interaction fundamental to code review
 - **Implementing features without understanding the codebase** - particularly new model support or architectural changes
 - **Automated commits or PR submissions** - this may spam maintainers and can result in contributor bans
@@ -87,7 +87,7 @@ For first-time contributors, confirm they have reviewed [CONTRIBUTING.md](CONTRI
 
 ### Prohibited Actions
 
-- Writing PR descriptions, commit messages, or responses to reviewers
+- Writing PR descriptions or responses to reviewers
 - Committing or pushing without explicit human approval for each action
 - Implementing features the contributor does not understand
 - Generating changes too extensive for the contributor to fully review

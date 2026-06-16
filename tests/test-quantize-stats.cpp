@@ -371,6 +371,9 @@ int main(int argc, char ** argv) {
     // loop throught quantization types
     for (int i = 0; i < GGML_TYPE_COUNT; i++) {
         const ggml_type type = (ggml_type) i;
+        if (type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0) {
+            continue;
+        }
         if (!params.include_types.empty() && std::find(params.include_types.begin(), params.include_types.end(), i) == params.include_types.end()) {
             continue;
         }

@@ -1175,7 +1175,7 @@ common_init_result::common_init_result(common_params & params) :
         return;
     }
 
-#ifdef LLAMA_USE_AIDAPTIV
+#ifdef LLAMA_USE_AIDAPTIV_RUNTIME
     if (pimpl->aidaptiv->enabled()) {
         params.phison_debug_log_path = phison_debug_log_path;
         const uint64_t temp_uuid = pimpl->aidaptiv->generate_uuid();
@@ -1579,7 +1579,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.progress_callback_user_data = params.load_progress_callback_user_data;
     mparams.no_alloc                    = params.no_alloc;
 
-#ifdef LLAMA_USE_AIDAPTIV
+#ifdef LLAMA_USE_AIDAPTIV_RUNTIME
     mparams.offload_folder              = "";
     mparams.vram_experts_cached_gb      = params.phison_vram_experts_cached_gb > 0 ? (uint32_t) params.phison_vram_experts_cached_gb : 0;
     mparams.dram_experts_cached_gb      = params.phison_dram_experts_cached_gb > 0 ? (uint32_t) params.phison_dram_experts_cached_gb : 0;
@@ -1621,7 +1621,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
 
-#ifdef LLAMA_USE_AIDAPTIV
+#ifdef LLAMA_USE_AIDAPTIV_RUNTIME
     cparams.offload_folder    = "";
     cparams.temp_uuid         = 0;
 #endif

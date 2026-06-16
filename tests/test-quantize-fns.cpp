@@ -138,6 +138,9 @@ int main(int argc, char * argv[]) {
         if (qfns->blck_size == 0) {
             continue;
         }
+        if (type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0) {
+            continue;
+        }
 
         const ggml_type ei = (ggml_type)i;
 

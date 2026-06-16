@@ -67,6 +67,10 @@ static ggml_tensor * ggml_mul_mat_aux(
 
     ggml_tensor * res;
 
+    if (cur->ne[0] % n != 0) {
+        cur = ggml_pad(ctx, cur, GGML_PAD(cur->ne[0], n) - cur->ne[0], 0, 0, 0);
+    }
+
     if (!ggml_is_contiguous(cur)) {
         res = ggml_cont_2d   (ctx, cur, n, ggml_nelements(cur)/n);
     } else {
@@ -77,6 +81,23 @@ static ggml_tensor * ggml_mul_mat_aux(
     res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
 
     return res;
+}
+
+static ggml_tensor * llm_graph_crop_padded_heads(
+        ggml_context * ctx,
+        ggml_tensor  * cur,
+        int64_t        n_head,
+        int64_t        n_embd_head,
+        int64_t        n_embd_head_padded) {
+    if (n_embd_head_padded == n_embd_head) {
+        return cur;
+    }
+
+    cur = ggml_reshape_3d(ctx, cur, n_embd_head_padded, n_head, cur->ne[1]);
+    cur = ggml_view_3d(ctx, cur, n_embd_head, n_head, cur->ne[2], cur->nb[1], cur->nb[2], 0);
+    cur = ggml_cont_2d(ctx, cur, n_embd_head*n_head, cur->ne[2]);
+
+    return cur;
 }
 
 void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
@@ -2247,6 +2268,7 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (inp->self_v_rot) {
         cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot);
+        cur = llm_graph_crop_padded_heads(ctx0, cur, hparams.n_head(il), hparams.n_embd_head_v(il), inp->self_v_rot->ne[0]);
     }
 
     if (wo) {
@@ -2426,6 +2448,7 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (v_rot) {
         cur = ggml_mul_mat_aux(ctx0, cur, v_rot);
+        cur = llm_graph_crop_padded_heads(ctx0, cur, hparams.n_head(il), hparams.n_embd_head_v(il), v_rot->ne[0]);
     }
 
     if (wo) {

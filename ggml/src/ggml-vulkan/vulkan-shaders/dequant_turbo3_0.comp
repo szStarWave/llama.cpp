@@ -1,0 +1,35 @@
+#version 450
+
+#include "dequant_head.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {block_turbo3_0 data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+const float turbo3_centroids[8] = float[8](
+    -0.157341f, -0.108589f, -0.072199f, -0.035979f,
+     0.035979f,  0.072199f,  0.108589f,  0.157341f
+);
+
+void main() {
+    const uint i = gl_WorkGroupID.x * 4 + gl_LocalInvocationID.x / 64;
+
+    const uint tid = gl_LocalInvocationID.x % 64;
+    const uint il  = tid / 16;
+    const uint ir  = tid % 16;
+    const uint ib = 16 * i + ir;
+    if (ib >= p.nel / 128) {
+        return;
+    }
+
+    const uint b_idx = 2048 * i + 128 * ir + 32 * il;
+    const float norm = float(data_a[ib].norm);
+
+    [[unroll]] for (uint l = 0; l < 32; ++l) {
+        const uint idx = 32 * il + l;
+        const uint low2 = (uint(data_a[ib].qs[idx / 4]) >> (2 * (idx % 4))) & 0x3u;
+        const uint high = (uint(data_a[ib].signs[idx / 8]) >> (idx % 8)) & 0x1u;
+        data_b[b_idx + l] = D_TYPE(norm * turbo3_centroids[low2 | (high << 2)]);
+    }
+}
