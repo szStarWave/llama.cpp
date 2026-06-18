@@ -1175,17 +1175,6 @@ common_init_result::common_init_result(common_params & params) :
         return;
     }
 
-#ifdef LLAMA_USE_AIDAPTIV_RUNTIME
-    if (pimpl->aidaptiv->enabled()) {
-        params.phison_debug_log_path = phison_debug_log_path;
-        const uint64_t temp_uuid = pimpl->aidaptiv->generate_uuid();
-        mparams.offload_folder         = pimpl->aidaptiv->offload_path().c_str();
-        mparams.temp_uuid              = temp_uuid;
-        cparams.offload_folder         = pimpl->aidaptiv->offload_path().c_str();
-        cparams.temp_uuid              = temp_uuid;
-    }
-#endif
-
     if (params.fit_params) {
         LOG_INF("%s: fitting params to device memory ...\n", __func__);
         LOG_INF("%s: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n", __func__);
@@ -1196,6 +1185,17 @@ common_init_result::common_init_result(common_params & params) :
             params.fit_params_min_ctx,
             params.verbosity >= 4 ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
     }
+
+#ifdef LLAMA_USE_AIDAPTIV_RUNTIME
+    if (pimpl->aidaptiv->enabled()) {
+        params.phison_debug_log_path = phison_debug_log_path;
+        const uint64_t temp_uuid = pimpl->aidaptiv->generate_uuid();
+        mparams.offload_folder         = pimpl->aidaptiv->offload_path().c_str();
+        mparams.temp_uuid              = temp_uuid;
+        cparams.offload_folder         = pimpl->aidaptiv->offload_path().c_str();
+        cparams.temp_uuid              = temp_uuid;
+    }
+#endif
 
     llama_model * model = llama_model_load_from_file(params.model.path.c_str(), mparams);
     if (model == NULL) {

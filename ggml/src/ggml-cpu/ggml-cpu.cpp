@@ -107,6 +107,8 @@ struct ggml_backend_cpu_context {
     void *              abort_callback_data;
 
     bool                use_ref;  // use reference implementation
+
+    ggml_backend        backend;
 };
 
 static const char * ggml_backend_cpu_get_name(ggml_backend_t backend) {
@@ -119,7 +121,6 @@ static void ggml_backend_cpu_free(ggml_backend_t backend) {
     struct ggml_backend_cpu_context * cpu_ctx = (struct ggml_backend_cpu_context *)backend->context;
     delete[] cpu_ctx->work_data;
     delete cpu_ctx;
-    delete backend;
 }
 
 struct ggml_backend_plan_cpu {
@@ -231,12 +232,34 @@ ggml_backend_t ggml_backend_cpu_init(void) {
     ctx->abort_callback_data = NULL;
     ctx->use_ref             = false;
 
-    ggml_backend_t cpu_backend = new ggml_backend {
-        /* .guid    = */ ggml_backend_cpu_guid(),
-        /* .iface   = */ ggml_backend_cpu_i,
-        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
-        /* .context = */ ctx,
-    };
+    ggml_backend_reg_t cpu_reg = ggml_backend_cpu_reg();
+
+    ggml_backend_dev_t cpu_dev = ggml_backend_reg_dev_get(cpu_reg, 0);
+
+    ggml_backend_t cpu_backend = &ctx->backend;
+
+    cpu_backend->guid = ggml_backend_cpu_guid();
+
+    cpu_backend->iface.get_name           = ggml_backend_cpu_get_name;
+    cpu_backend->iface.free               = ggml_backend_cpu_free;
+    cpu_backend->iface.set_tensor_async   = NULL;
+    cpu_backend->iface.get_tensor_async   = NULL;
+    cpu_backend->iface.set_tensor_2d_async= NULL;
+    cpu_backend->iface.get_tensor_2d_async= NULL;
+    cpu_backend->iface.cpy_tensor_async   = NULL;
+    cpu_backend->iface.synchronize        = NULL;
+    cpu_backend->iface.graph_plan_create  = ggml_backend_cpu_graph_plan_create;
+    cpu_backend->iface.graph_plan_free    = ggml_backend_cpu_graph_plan_free;
+    cpu_backend->iface.graph_plan_update  = NULL;
+    cpu_backend->iface.graph_plan_compute = ggml_backend_cpu_graph_plan_compute;
+    cpu_backend->iface.graph_compute      = ggml_backend_cpu_graph_compute;
+    cpu_backend->iface.event_record       = NULL;
+    cpu_backend->iface.event_wait         = NULL;
+    cpu_backend->iface.graph_optimize     = NULL;
+
+    cpu_backend->device = cpu_dev;
+
+    cpu_backend->context = ctx;
 
     if (cpu_backend == NULL) {
         delete ctx;

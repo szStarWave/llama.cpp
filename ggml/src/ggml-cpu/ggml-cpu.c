@@ -3407,7 +3407,13 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
         //GGML_PRINT_DEBUG("Threadpool is not specified. Will create a disposable threadpool : n_threads %d\n", n_threads);
         disposable_threadpool = true;
 
-        struct ggml_threadpool_params ttp = ggml_threadpool_params_default(n_threads);
+        struct ggml_threadpool_params ttp;
+        memset(&ttp, 0, sizeof(ttp));
+        ttp.n_threads  = n_threads;
+        ttp.prio       = 0;
+        ttp.poll       = 50;
+        ttp.strict_cpu = false;
+        ttp.paused     = false;
         threadpool = ggml_threadpool_new_impl(&ttp, cgraph, cplan);
     } else {
         // Reset some of the parameters that need resetting
