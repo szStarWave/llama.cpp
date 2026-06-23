@@ -757,7 +757,23 @@ private:
         size_t n_new = std::min<size_t>(all_tokens.size() - 1, (size_t) std::max(0, n_past) + n_reuse);
         n_new = input_tokens.valid_keep_first(n_new);
 
-        if (n_new > slot.prompt.tokens.size()) {
+        const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id);
+        if (pos_max < 0) {
+            if (n_new > 0) {
+                SLT_WRN(slot, "aiDAPTIV restore reported %zu cached tokens, but the slot has no KV data; reprocessing prompt\n", n_new);
+                n_new = 0;
+            }
+        } else {
+            const size_t n_kv = input_tokens.valid_keep_first(input_tokens.size_up_to_pos(pos_max + 1));
+            if (n_kv < n_new) {
+                SLT_WRN(slot, "aiDAPTIV restore reported %zu cached tokens, but KV is only contiguous through %zu tokens (pos_max = %d); clamping\n",
+                        n_new, n_kv, pos_max);
+                n_new = n_kv;
+            }
+        }
+
+        if (n_new != (size_t) std::max(0, n_past) ||
+            slot.prompt.tokens.get_common_prefix(input_tokens) < n_new) {
             slot.prompt.data = {};
             slot.prompt.checkpoints.clear();
             slot.prompt.tokens.copy_prefix_from(input_tokens, n_new);
@@ -2807,6 +2823,23 @@ private:
                     common_context_seq_rm(ctx_tgt, slot.id, p0, -1);
                     if (ctx_dft) {
                         common_context_seq_rm(ctx_dft.get(), slot.id, p0, -1);
+                    }
+
+                    const llama_pos kv_pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id);
+                    if (kv_pos_max != p0 - 1) {
+                        SLT_WRN(slot, "KV position mismatch after aiDAPTIV restore/trim, pos_next = %d, pos_max = %d; reprocessing prompt\n",
+                                p0, kv_pos_max);
+
+                        common_context_seq_rm(ctx_tgt, slot.id, 0, -1);
+                        if (ctx_dft) {
+                            common_context_seq_rm(ctx_dft.get(), slot.id, 0, -1);
+                        }
+
+                        slot.prompt.data = {};
+                        slot.prompt.checkpoints.clear();
+                        slot.prompt.tokens.keep_first(0);
+                        slot.n_prompt_tokens_cache = 0;
+                        slot.n_prompt_tokens_processed = 0;
                     }
 
                     // If using an alora, there may be uncached tokens that come
