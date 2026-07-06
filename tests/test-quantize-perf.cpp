@@ -122,6 +122,9 @@ static void usage(char * argv[]) {
     printf("  --type TYPE           set test type as");
     for (int i = 0; i < GGML_TYPE_COUNT; i++) {
         ggml_type type = (ggml_type) i;
+        if (type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0) {
+            continue;
+        }
         const auto * qfns     = ggml_get_type_traits(type);
         const auto * qfns_cpu = ggml_get_type_traits_cpu(type);
         if (ggml_type_name(type) != NULL) {
@@ -264,6 +267,9 @@ int main(int argc, char * argv[]) {
 
     for (int i = 0; i < GGML_TYPE_COUNT; i++) {
         ggml_type type = (ggml_type) i;
+        if (type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0) {
+            continue;
+        }
         const auto * qfns = ggml_get_type_traits(type);
         const auto * qfns_cpu = ggml_get_type_traits_cpu(type);
         if (!params.include_types.empty() && ggml_type_name(type) && std::find(params.include_types.begin(), params.include_types.end(), ggml_type_name(type)) == params.include_types.end()) {
