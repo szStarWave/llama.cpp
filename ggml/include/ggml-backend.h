@@ -41,6 +41,7 @@ extern "C" {
     GGML_API size_t                ggml_backend_buft_get_alloc_size(ggml_backend_buffer_type_t buft, const struct ggml_tensor * tensor);
     GGML_API bool                  ggml_backend_buft_is_host       (ggml_backend_buffer_type_t buft);
     GGML_API ggml_backend_dev_t    ggml_backend_buft_get_device    (ggml_backend_buffer_type_t buft);
+    GGML_API size_t                ggml_backend_max_buft_allocate_size(ggml_backend_buffer_type_t buft, enum ggml_op op);
 
     //
     // Backend buffer
@@ -74,6 +75,13 @@ extern "C" {
     // Backend (stream)
     //
 
+    typedef struct {
+        struct ggml_tensor * tensor;
+        size_t               size_per_expert;
+        size_t               dst_offset;
+        size_t               src_offset;
+    } ggml_expert_tensor;
+
     GGML_API ggml_guid_t  ggml_backend_guid(ggml_backend_t backend);
     GGML_API const char * ggml_backend_name(ggml_backend_t backend);
     GGML_API void         ggml_backend_free(ggml_backend_t backend);
@@ -93,7 +101,21 @@ extern "C" {
     GGML_API void ggml_backend_tensor_get   (const struct ggml_tensor * tensor,       void * data, size_t offset, size_t size);
     GGML_API void ggml_backend_tensor_set_2d(      struct ggml_tensor * tensor, const void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
     GGML_API void ggml_backend_tensor_get_2d(const struct ggml_tensor * tensor,       void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
+    
+    GGML_API void ggml_backend_expert_tensor_set(struct ggml_tensor *       tensor,
+                                                 void *                     data,
+                                                 ggml_expert_tensor * const experts,
+                                                 const uint32_t              n_experts);
+    
     GGML_API void ggml_backend_tensor_memset(      struct ggml_tensor * tensor,     uint8_t value, size_t offset, size_t size);
+
+    typedef struct {
+        void * buff_struct;
+        void * buff_ptr;
+    } ggml_backend_staging_buffer;
+    GGML_API ggml_backend_staging_buffer ggml_backend_alloc_staging_buf(const struct ggml_tensor * tensor, size_t size); 
+    GGML_API bool ggml_backend_support_alloc_stage_buf(const struct ggml_tensor * tensor);
+    GGML_API size_t ggml_backend_max_stage_buf_size(const struct ggml_tensor * tensor);
 
     GGML_API void ggml_backend_synchronize(ggml_backend_t backend);
 

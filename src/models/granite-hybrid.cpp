@@ -65,6 +65,23 @@ void llama_model_granite_hybrid::load_arch_tensors(llama_model_loader &) {
         }
     }
 
+    const auto is_moe_layer = [&](uint32_t i) -> bool {
+        return true;
+    };
+
+    const expert_tensor_params expert_params = {
+        { LLM_TENSOR_FFN_GATE_EXPS, "weight", { n_embd, n_ff }, true  },
+        { LLM_TENSOR_FFN_DOWN_EXPS, "weight", { n_ff, n_embd }, false },
+        { LLM_TENSOR_FFN_UP_EXPS,   "weight", { n_embd, n_ff }, false }
+    };
+
+    auto expert_mapping_table = is_moe_offload_enabled() ? distribute_expert_tensor(expert_params, n_layer, is_moe_layer) :
+                                                std::unordered_map<std::string, ggml_tensor *>{};
+
+    if (is_moe_offload_enabled()) {
+        offload_expert(expert_params, n_layer, is_moe_layer, n_expert);
+    }
+
     for (int i = 0; i < n_layer; ++i) {
         auto & layer = layers[i];
 
@@ -104,9 +121,15 @@ void llama_model_granite_hybrid::load_arch_tensors(llama_model_loader &) {
             layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
             layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight", i), {n_rot/2}, TENSOR_NOT_REQUIRED | (i != 0 ? TENSOR_DUPLICATED : 0));
             layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", i), {n_embd, n_expert}, 0);
-            layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd,   n_ff, n_expert}, TENSOR_NOT_REQUIRED);
-            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {  n_ff, n_embd, n_expert}, 0);
-            layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd,   n_ff, n_expert}, 0);
+            if (is_moe_offload_enabled() && !need_exclude(i)) {
+                layer.ffn_gate_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
+                layer.ffn_down_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
+                layer.ffn_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i).str()];
+            } else {
+                layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd,   n_ff, n_expert}, TENSOR_NOT_REQUIRED);
+                layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {  n_ff, n_embd, n_expert}, 0);
+                layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd,   n_ff, n_expert}, 0);
+            }
 
             // For Granite MoE Shared
             if (hparams.n_ff_shexp > 0) {
@@ -124,6 +147,10 @@ void llama_model_granite_hybrid::load_arch_tensors(llama_model_loader &) {
             layer.ffn_down_b = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "bias", i), {n_embd}, TENSOR_NOT_REQUIRED);
             layer.ffn_up_b   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "bias", i), {n_ff}, TENSOR_NOT_REQUIRED);
         }
+    }
+
+    if (is_moe_offload_enabled()) {
+        create_expert_manager(expert_mapping_table, expert_params, n_layer, is_moe_layer);
     }
 }
 

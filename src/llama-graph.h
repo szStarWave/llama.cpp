@@ -5,6 +5,9 @@
 #include "llama-hparams.h"
 #include "llama-adapter.h"
 
+class ExpertManager;
+struct llama_model;
+
 #include <cstdint>
 #include <vector>
 #include <memory>
@@ -671,6 +674,8 @@ using llm_graph_cb = std::function<void(const llama_ubatch & ubatch, ggml_tensor
 class llm_graph_result;
 
 struct llm_graph_params {
+    const llama_model * model = nullptr;
+
     llm_arch arch = LLM_ARCH_UNKNOWN;
 
     llama_hparams hparams;
@@ -936,6 +941,9 @@ struct llm_graph_context {
 
     ggml_context * ctx0 = nullptr;
     ggml_cgraph  * gf   = nullptr;
+
+    ExpertManager * expert_mgr;
+    std::function<bool(uint32_t)> need_exclude;
 
     llm_graph_context(const llm_graph_params & params);
     virtual ~llm_graph_context() = default;

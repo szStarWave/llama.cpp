@@ -5,6 +5,8 @@
 #include "llama-model.h"
 #include "llama-context.h"
 
+#include "aidaptiv-dispatch.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -387,7 +389,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
     if (p0 < 0) {
         p0 = 0;
     }
-
+    
     if (p1 < 0) {
         p1 = std::numeric_limits<llama_pos>::max();
     }
@@ -2633,4 +2635,40 @@ void llama_kv_cache_context::set_input_k_rot(ggml_tensor * dst) const {
 
 void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
     kv->set_input_v_rot(dst);
+}
+
+void llama_kv_cache::get_cached_positions(const llama_seq_id & seq_id, const size_t & count, bool * cached, uint32_t mask) const {
+    g_aidaptiv->kv_cache_get_cached_positions(*this, seq_id, count, cached, mask);
+}
+
+uint32_t llama_kv_cache::get_components() const {
+    return LLAMA_MEM_COMP_BASE_ATTN;
+}
+
+size_t llama_kv_cache::get_cache_size(uint64_t node_size, uint32_t mask) const {
+    return g_aidaptiv->kv_cache_get_cache_size(*this, node_size, mask);
+}
+
+void llama_kv_cache::kv_cache_read(void *               ptr,
+                                   const size_t &       node_stride,
+                                   const uint32_t &     node_size,
+                                   const llama_seq_id & seq_id,
+                                   const llama_pos &    start_pos,
+                                   const size_t &       count,
+                                   const bool           is_last_node, 
+                                   uint32_t             mask,
+                                   const llama_pos *    mrope_pos) {
+    g_aidaptiv->kv_cache_read(*this, ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mask, mrope_pos);
+}
+
+void llama_kv_cache::kv_cache_write(void *               ptr,
+                                    const size_t &       node_stride,
+                                    const uint32_t &     node_size,
+                                    const llama_seq_id & seq_id,
+                                    const llama_pos &    start_pos,
+                                    const size_t &       count,
+                                    const bool           is_last_node, 
+                                    uint32_t             mask,
+                                    const llama_pos *    mrope_pos) {
+    g_aidaptiv->kv_cache_write(*this, ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, mask, mrope_pos);
 }

@@ -17,6 +17,7 @@
 struct llama_cparams;
 struct llama_ubatch;
 struct llama_model_loader;
+class ExpertManager;
 
 // available models
 enum llm_type {
@@ -626,11 +627,16 @@ struct llama_model {
     // statically allocated context for assigning
     struct llama_meta_device_get_split_state_userdata get_split_state_ud;
 
+    ExpertManager * expert_mgr = nullptr;
+    std::function<bool(uint32_t)> expert_need_exclude;
+
     int64_t t_load_us  = 0;
     int64_t t_start_us = 0;
 
     explicit llama_model(const llama_model_params & params);
     virtual ~llama_model();
+
+    void reset_expert_manager(ExpertManager * mgr);
 
     std::string arch_name() const;
     std::string type_name() const;
@@ -692,6 +698,16 @@ protected:
 llama_model * llama_model_create(llm_arch arch, const llama_model_params & params);
 llama_model * llama_model_create(llama_model_loader & ml, const llama_model_params & params);
 
+struct aidaptiv_moe_offload_params {
+    uint32_t    vram_experts_cached_gb = 0;
+    uint32_t    dram_experts_cached_gb = 0;
+    int32_t     vram_experts_per_layer = -1;
+    int32_t     dram_experts_per_layer = -1;
+    int32_t     shared_buffer_layers   = -1;
+    uint64_t    temp_uuid              = 0;
+    std::string offload_folder;
+};
+
 // model must inherit from this
 struct llama_model_base : public llama_model {
     friend struct llama_model;
@@ -700,6 +716,8 @@ struct llama_model_base : public llama_model {
     llama_model_loader * ml = nullptr;
     const LLM_TN tn;
 
+    using expert_tensor_params = std::vector<std::tuple<llm_tensor, std::string, std::vector<int64_t>, bool>>;
+
     // llama_model_loader is not yet defined at this point, so we will set it after construction
     const int TENSOR_DUPLICATED;
     const int TENSOR_NOT_REQUIRED;
@@ -707,7 +725,7 @@ struct llama_model_base : public llama_model {
     const int TENSOR_SKIP_IF_VIRTUAL;
 
     explicit llama_model_base(const llama_model_params & params);
-    virtual ~llama_model_base() = default;
+    virtual ~llama_model_base();
 
     ggml_tensor * create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags);
 
@@ -722,6 +740,12 @@ struct llama_model_base : public llama_model {
     void create_tensor_qkv(llama_layer & layer, int bid,
                 int64_t n_embd_, int64_t n_embd_q_, int64_t n_embd_k_, int64_t n_embd_v_,
                 int flags);
+
+    bool is_moe_offload_enabled() const;
+    bool need_exclude(uint32_t il);
+    std::unordered_map<std::string, ggml_tensor *> distribute_expert_tensor(expert_tensor_params t_list, uint32_t n_layers, const std::function<bool(uint32_t)> &is_moe_layer);
+    void offload_expert(expert_tensor_params t_list, uint32_t n_layers, const std::function<bool(uint32_t)> &is_moe_layer, uint32_t n_expert);
+    void create_expert_manager(std::unordered_map<std::string, ggml_tensor *> &mapping_table, expert_tensor_params t_list, uint32_t n_layers, const std::function<bool(uint32_t)> &is_moe_layer);
 
     void load_stats  (llama_model_loader & ml) override;
     void load_hparams(llama_model_loader & ml) override;

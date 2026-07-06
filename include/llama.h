@@ -328,6 +328,12 @@ extern "C" {
         bool use_extra_bufts; // use extra buffer types (used for weight repacking)
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
+        const char * offload_folder;  // offload folder
+        uint32_t vram_experts_cached_gb;  // vram experts cache size, 0 = disable moe
+        uint32_t dram_experts_cached_gb;  // dram experts cache size
+        int32_t shared_buffer_layers;  // number layers per buffer
+        uint64_t temp_uuid;  // temp cache uuid
+        int8_t requant;       // load-time requant of always-on tensors to Q4_K. -1 = auto (on for qwen35/qwen35moe/gemma4/qwen3), 0 = off, 1 = on. Forces no-mmap when active.
     };
 
     struct llama_sampler_seq_config {
@@ -543,6 +549,7 @@ extern "C" {
     //       ref: https://github.com/ggml-org/llama.cpp/pull/17046#discussion_r2503085732
     LLAMA_API uint32_t llama_n_ctx      (const struct llama_context * ctx);
     LLAMA_API uint32_t llama_n_ctx_seq  (const struct llama_context * ctx);
+    LLAMA_API bool     llama_flash_attn (const struct llama_context * ctx);
     LLAMA_API uint32_t llama_n_batch    (const struct llama_context * ctx);
     LLAMA_API uint32_t llama_n_ubatch   (const struct llama_context * ctx);
     LLAMA_API uint32_t llama_n_seq_max  (const struct llama_context * ctx);
@@ -780,6 +787,25 @@ extern "C" {
 
     // Check if the memory supports shifting
     LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
+
+    enum llama_memory_component_flag : uint32_t {
+        LLAMA_MEM_COMP_BASE_ATTN = 1u << 0,
+        LLAMA_MEM_COMP_SWA_ATTN  = 1u << 1,
+        LLAMA_MEM_COMP_RECURRENT = 1u << 2,
+        LLAMA_MEM_COMP_ALL       = LLAMA_MEM_COMP_BASE_ATTN | LLAMA_MEM_COMP_SWA_ATTN | LLAMA_MEM_COMP_RECURRENT,
+    };
+
+    LLAMA_API uint32_t llama_memory_size(llama_memory_t mem);
+    LLAMA_API uint32_t llama_memory_get_components(llama_memory_t mem);
+    LLAMA_API void llama_memory_get_cached_positions(llama_memory_t mem, const llama_seq_id seq_id, const size_t count, bool* cached, uint32_t comp_mask);
+    LLAMA_API size_t llama_memory_kv_cache_size(llama_memory_t mem, uint64_t node_size, uint32_t comp_mask);
+    LLAMA_API void   llama_memory_kv_read(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, uint32_t comp_mask, const llama_pos * mrope_pos);
+    LLAMA_API void   llama_memory_kv_write(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, uint32_t comp_mask, const llama_pos * mrope_pos);
+    LLAMA_API float llama_moe_get_prefill_vram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_prefill_dram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_decode_vram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_decode_dram_hit_rate(struct llama_context * ctx);
+    LLAMA_API void llama_moe_reset_hit_rate(struct llama_context * ctx);
 
     //
     // State / sessions

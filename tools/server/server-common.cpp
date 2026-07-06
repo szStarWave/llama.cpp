@@ -399,12 +399,33 @@ void server_tokens::push_back(server_tokens & tokens) {
     }
 }
 
+void server_tokens::copy_prefix_from(const server_tokens & inp, size_t n) {
+    GGML_ASSERT(n <= inp.size());
+    clear();
+    has_mtmd = inp.has_mtmd;
+
+    tokens.insert(tokens.end(), inp.tokens.begin(), inp.tokens.begin() + n);
+    if (has_mtmd) {
+        for (const auto & it : inp.map_idx_to_media) {
+            if (it.first >= n) {
+                break;
+            }
+            mtmd::input_chunk_ptr new_chunk(mtmd_input_chunk_copy(it.second.get()));
+            map_idx_to_media[it.first] = std::move(new_chunk);
+        }
+    }
+}
+
 void server_tokens::insert(const llama_tokens & inp_tokens) {
     tokens.insert(tokens.end(), inp_tokens.begin(), inp_tokens.end());
 }
 
 const llama_tokens & server_tokens::get_tokens() const {
     GGML_ASSERT(!has_mtmd);
+    return tokens;
+}
+
+const llama_tokens & server_tokens::get_all_tokens() const {
     return tokens;
 }
 
@@ -416,6 +437,39 @@ llama_tokens server_tokens::get_text_tokens() const {
             res.push_back(t);
         }
     }
+    return res;
+}
+
+std::vector<aidaptiv::mtmd_chunk_info> server_tokens::get_aidaptiv_mtmd_info() const {
+    std::vector<aidaptiv::mtmd_chunk_info> res;
+    if (!has_mtmd) {
+        return res;
+    }
+
+    for (const auto & it : map_idx_to_media) {
+        const auto & chunk = it.second;
+        if (!chunk) {
+            continue;
+        }
+
+        uint64_t hash = 0;
+        const char * id = mtmd_input_chunk_get_id(chunk.get());
+        if (id && id[0] != '\0') {
+            try {
+                hash = std::stoull(id);
+            } catch (...) {
+                hash = std::hash<std::string>{}(id);
+            }
+        }
+
+        res.push_back(aidaptiv::mtmd_chunk_info{
+            hash,
+            mtmd_input_chunk_get_n_tokens(chunk.get()),
+            {},
+            0
+        });
+    }
+
     return res;
 }
 
@@ -455,6 +509,18 @@ void server_tokens::keep_first(size_t n) {
         }
     }
     tokens.resize(n);
+}
+
+size_t server_tokens::valid_keep_first(size_t n) const {
+    if (!has_mtmd || n == 0 || n >= tokens.size()) {
+        return std::min(n, tokens.size());
+    }
+
+    while (n > 0 && n < tokens.size() && tokens[n - 1] == LLAMA_TOKEN_NULL && tokens[n] == LLAMA_TOKEN_NULL) {
+        n--;
+    }
+
+    return n;
 }
 
 std::string server_tokens::detokenize(const llama_context * ctx, bool special) const {
@@ -687,19 +753,30 @@ size_t validate_utf8(const std::string& text) {
     return len;
 }
 
-server_tokens process_mtmd_prompt(mtmd_context * mctx, const std::string & prompt, const std::vector<raw_buffer> & files, bool is_placeholder) {
-    // these will be freed upon going out of scope
+// Computes FNV-1a hash of the data
+static std::string fnv_hash(const uint8_t * data, size_t len) {
+    const uint64_t fnv_prime = 0x100000001b3ULL;
+    uint64_t hash = 0xcbf29ce484222325ULL;
+
+    for (size_t i = 0; i < len; ++i) {
+        hash ^= data[i];
+        hash *= fnv_prime;
+    }
+    return std::to_string(hash);
+}
+
+server_tokens process_mtmd_prompt(mtmd_context * mctx, std::string prompt, std::vector<raw_buffer> files) {
     mtmd::bitmaps bitmaps;
-    std::vector<mtmd_helper::video_ptr> videos;
     for (auto & file : files) {
-        auto out = mtmd_helper_bitmap_init_from_buf(mctx, file.data(), file.size(), is_placeholder);
-        if (!out.bitmap) {
+        auto out = mtmd_helper_bitmap_init_from_buf(mctx, file.data(), file.size(), false);
+        mtmd::bitmap bmp(out.bitmap);
+        if (!bmp.ptr) {
             throw std::runtime_error("Failed to load image or audio file");
         }
-        bitmaps.entries.emplace_back(out.bitmap);
-        if (out.video_ctx) {
-            videos.emplace_back(out.video_ctx);
-        }
+        // calculate bitmap hash (for KV caching)
+        std::string hash = fnv_hash(bmp.data(), bmp.n_bytes());
+        bmp.set_id(hash.c_str());
+        bitmaps.entries.push_back(std::move(bmp));
     }
     // process prompt
     std::vector<server_tokens> inputs;

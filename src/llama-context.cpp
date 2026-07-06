@@ -12,6 +12,8 @@
 #include "llama-ext.h"
 #include "llama.h"
 
+#include "aidaptiv-dispatch.h"
+
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -481,11 +483,13 @@ llama_context::~llama_context() {
 
             const size_t size_exp = backend_buf_exp_size[i];
             const size_t size_act = ggml_backend_sched_get_buffer_size(sched.get(), backend);
-            if (size_exp == size_act) {
-                LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, matches expectation of %8.4f MiB\n",
+            if (size_act > size_exp) {
+                // Under-reservation: actual usage exceeded the worst-case prediction, which forced
+                // a grow-realloc during inference and means the predicted memory budget was wrong.
+                LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, exceeds expectation of %8.4f MiB\n",
                     __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
             } else {
-                LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, does not match expectation of %8.4f MiB\n",
+                LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, expectation was %8.4f MiB\n",
                     __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
             }
         }
@@ -742,6 +746,10 @@ ggml_backend_sched_t llama_context::get_sched() const {
 
 uint32_t llama_context::n_ctx() const {
     return cparams.n_ctx;
+}
+
+bool llama_context::get_fa() const {
+    return cparams.flash_attn;
 }
 
 uint32_t llama_context::n_ctx_seq() const {
@@ -2417,6 +2425,7 @@ llm_graph_params llama_context::graph_params(
             const llama_memory_context_i * mctx,
                           llm_graph_type   gtype) const {
     return {
+        /*.model       =*/ &model,
         /*.arch        =*/ model.arch,
         /*.hparams     =*/ model.hparams,
         /*.cparams     =*/ cparams,
@@ -3607,6 +3616,10 @@ uint32_t llama_n_ctx_seq(const llama_context * ctx) {
     return ctx->n_ctx_seq();
 }
 
+bool llama_flash_attn(const llama_context * ctx) {
+    return ctx->get_fa();
+}
+
 uint32_t llama_n_batch(const llama_context * ctx) {
     return ctx->n_batch();
 }
@@ -3936,6 +3949,94 @@ bool llama_memory_can_shift(llama_memory_t mem) {
     }
 
     return mem->get_can_shift();
+}
+
+uint32_t llama_memory_size(llama_memory_t mem) {
+    if (!mem) {
+        return 0;
+    }
+
+    return mem->get_size();
+}
+
+
+uint32_t llama_memory_get_components(llama_memory_t mem) {
+    if (!mem) {
+        return 0;
+    }
+    return mem->get_components();
+}
+
+size_t llama_memory_kv_cache_size(llama_memory_t mem, uint64_t node_size, uint32_t comp_mask) {
+    if (!mem) {
+        return 0;
+    }
+    return mem->get_cache_size(node_size, comp_mask);
+}
+
+void llama_memory_get_cached_positions(llama_memory_t mem, const llama_seq_id seq_id, const size_t count, bool* cached, uint32_t comp_mask) {
+    if (!mem || !cached || count == 0) {
+        return;
+    }
+    if (comp_mask == 0) {
+        memset(cached, false, count * sizeof(bool));
+        return;
+    }
+    memset(cached, true, count * sizeof(bool));
+    mem->get_cached_positions(seq_id, count, cached, comp_mask);
+}
+
+void llama_memory_kv_read(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, uint32_t comp_mask,  const llama_pos * mrope_pos) {
+    if (!mem || count == 0 || comp_mask == 0) {
+        return;
+    }
+    mem->kv_cache_read(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, comp_mask);
+}
+
+void llama_memory_kv_write(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, uint32_t comp_mask,  const llama_pos * mrope_pos) {
+    if (!mem || count == 0 || comp_mask == 0) {
+        return;
+    }
+    mem->kv_cache_write(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, comp_mask);
+}
+
+float llama_moe_get_prefill_vram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_prefill_vram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_prefill_dram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_prefill_dram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_decode_vram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_decode_vram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_decode_dram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_decode_dram_hit_rate(model->expert_mgr);
+}
+
+void llama_moe_reset_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model != nullptr && model->expert_mgr != nullptr) {
+        g_aidaptiv->em_reset_hit_rate(model->expert_mgr);
+    }
 }
 
 // llama state API

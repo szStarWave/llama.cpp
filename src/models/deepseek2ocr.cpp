@@ -37,6 +37,24 @@ void llama_model_deepseek2ocr::load_arch_tensors(llama_model_loader &) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
     }
 
+    const auto is_moe_layer = [&](uint32_t i) -> bool {
+        return i >= hparams.n_layer_dense_lead;
+    };
+
+    const expert_tensor_params expert_params = {
+        { LLM_TENSOR_FFN_GATE_EXPS, "weight", { n_embd, n_ff_exp }, true },
+        { LLM_TENSOR_FFN_DOWN_EXPS, "weight", { n_ff_exp, n_embd }, false },
+        { LLM_TENSOR_FFN_UP_EXPS,   "weight", { n_embd, n_ff_exp }, true },
+        { LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", { n_embd, n_ff_exp * 2 }, true }
+    };
+
+    auto expert_mapping_table = is_moe_offload_enabled() ? distribute_expert_tensor(expert_params, n_layer, is_moe_layer) :
+                                                std::unordered_map<std::string, ggml_tensor *>{};
+
+    if (is_moe_offload_enabled()) {
+        offload_expert(expert_params, n_layer, is_moe_layer, n_expert);
+    }
+
     for (int i = 0; i < n_layer; ++i) {
         auto & layer = layers[i];
 
@@ -65,14 +83,25 @@ void llama_model_deepseek2ocr::load_arch_tensors(llama_model_loader &) {
             }
 
             // MoE branch
-            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, 0);
-            create_tensor_gate_up_exps(layer, i, n_embd, n_ff_exp, n_expert, 0);
+            if (is_moe_offload_enabled() && !need_exclude(i)) {
+                layer.ffn_gate_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
+                layer.ffn_down_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
+                layer.ffn_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i).str()];
+                layer.ffn_gate_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", i).str()];
+            } else {
+                layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, 0);
+                create_tensor_gate_up_exps(layer, i, n_embd, n_ff_exp, n_expert, 0);
+            }
 
             // Shared expert branch
             layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {n_embd, n_ff_exp * n_expert_shared}, 0);
             layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {        n_ff_exp * n_expert_shared, n_embd}, 0);
             layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,   "weight", i), {n_embd, n_ff_exp * n_expert_shared}, 0);
         }
+    }
+
+    if (is_moe_offload_enabled()) {
+        create_expert_manager(expert_mapping_table, expert_params, n_layer, is_moe_layer);
     }
 }
 

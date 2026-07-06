@@ -32,6 +32,24 @@ void llama_model_lfm2moe::load_arch_tensors(llama_model_loader &) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
     }
 
+    const auto is_moe_layer = [&](uint32_t i) -> bool {
+        return i >= hparams.n_layer_dense_lead;
+    };
+
+    const expert_tensor_params expert_params = {
+        { LLM_TENSOR_FFN_GATE_EXPS, "weight", { n_embd, hparams.n_ff_exp }, false },
+        { LLM_TENSOR_FFN_DOWN_EXPS, "weight", { hparams.n_ff_exp, n_embd }, false },
+        { LLM_TENSOR_FFN_UP_EXPS,   "weight", { n_embd, hparams.n_ff_exp }, false }
+    };
+
+    auto expert_mapping_table =
+        is_moe_offload_enabled() ? distribute_expert_tensor(expert_params, n_layer, is_moe_layer) :
+                        std::unordered_map<std::string, ggml_tensor *>{};
+
+    if (is_moe_offload_enabled()) {
+        offload_expert(expert_params, n_layer, is_moe_layer, n_expert);
+    }
+
     for (int i = 0; i < n_layer; ++i) {
         auto & layer = layers[i];
 
@@ -42,9 +60,15 @@ void llama_model_lfm2moe::load_arch_tensors(llama_model_loader &) {
         if (is_moe_layer) {
             GGML_ASSERT(n_expert && n_expert_used);
             layer.ffn_gate_inp    = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i),  {n_embd, n_expert}, 0);
-            layer.ffn_gate_exps   = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, hparams.n_ff_exp, n_expert}, 0);
-            layer.ffn_down_exps   = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {hparams.n_ff_exp,   n_embd, n_expert}, 0);
-            layer.ffn_up_exps     = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i),   {n_embd, hparams.n_ff_exp, n_expert}, 0);
+            if (is_moe_offload_enabled() && !need_exclude(i)) {
+                layer.ffn_gate_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
+                layer.ffn_down_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
+                layer.ffn_up_exps     = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i).str()];
+            } else {
+                layer.ffn_gate_exps   = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, hparams.n_ff_exp, n_expert}, 0);
+                layer.ffn_down_exps   = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {hparams.n_ff_exp,   n_embd, n_expert}, 0);
+                layer.ffn_up_exps     = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i),   {n_embd, hparams.n_ff_exp, n_expert}, 0);
+            }
             layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias", i), {n_expert}, 0);
         } else {  // dense
             layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
@@ -68,6 +92,10 @@ void llama_model_lfm2moe::load_arch_tensors(llama_model_loader &) {
             layer.shortconv.in_proj  = create_tensor(tn(LLM_TENSOR_SHORTCONV_INPROJ,  "weight", i), {n_embd, 3 * n_embd}, 0);
             layer.shortconv.out_proj = create_tensor(tn(LLM_TENSOR_SHORTCONV_OUTPROJ, "weight", i), {n_embd, n_embd}, 0);
         }
+    }
+
+    if (is_moe_offload_enabled()) {
+        create_expert_manager(expert_mapping_table, expert_params, n_layer, is_moe_layer);
     }
 
     // for LFM2-ColBert-350M

@@ -13,6 +13,8 @@
 #include "llama-memory-hybrid-iswa.h"
 #include "llama-memory-recurrent.h"
 
+#include "aidaptiv-dispatch.h"
+
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -1361,7 +1363,9 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     cb_func          (params.cb),
     res              (params.res),
     ctx0             (res->get_ctx()),
-    gf               (res->get_gf()) {
+    gf               (res->get_gf()),
+    expert_mgr       (params.model ? params.model->expert_mgr : nullptr),
+    need_exclude     (params.model ? params.model->expert_need_exclude : std::function<bool(uint32_t)>{}) {
         res->set_params(params);
     }
 
@@ -1422,7 +1426,8 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
         const int64_t n_tokens = cur->ne[2];
         ggml_tensor * s = ggml_reshape_3d(ctx0, w_s, 1, n_expert, 1);
         s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
-        s = ggml_get_rows(ctx0, s, ids);
+        // Scale tensors are indexed by original expert id, not VRAM cache slot.
+        s = ggml_get_rows(ctx0, s, moe_ids_for_scale ? moe_ids_for_scale : ids);
         res = ggml_mul(ctx0, res, s);
     }
     for (const auto & lora : *loras) {
@@ -1929,6 +1934,18 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
     cb(weights, "ffn_moe_weights", il);
 
+    {
+        // Keep original expert IDs for per-expert scale lookups (scale tensors are
+        // indexed by original expert ID, not by VRAM cache slot).
+        moe_ids_for_scale = selected_experts;
+
+        if (expert_mgr != nullptr && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP &&
+                (!need_exclude || !need_exclude(il))) {
+            ggml_tensor * scheduled_selected_experts = g_aidaptiv->em_schedule_experts(ctx0, selected_experts, expert_mgr, il);
+            ggml_backend_sched_set_tensor_backend(sched, scheduled_selected_experts, backend_cpu);
+            selected_experts = scheduled_selected_experts;
+        }
+    }
 
     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT) {
         weights = ggml_reshape_2d(ctx0, weights, n_expert_used, n_tokens);
@@ -2106,6 +2123,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         experts = ggml_add_id(ctx0, experts, down_exps_b, selected_experts);
         cb(experts, "ffn_moe_down_biased", il);
     }
+
+    moe_ids_for_scale = nullptr;
 
     if (!weight_before_ffn) {
         experts = ggml_mul(ctx0, experts, weights);

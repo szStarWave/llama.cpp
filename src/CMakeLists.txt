@@ -59,4 +59,16 @@ if (BUILD_SHARED_LIBS)
     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
     target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
+    set_target_properties(llama PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
+
+include(${CMAKE_SOURCE_DIR}/aidaptiv/aidaptiv.cmake)
+target_sources(llama PRIVATE ${AIDAPTIV_DISPATCH_SRC})
+target_include_directories(llama PRIVATE ${AIDAPTIV_DISPATCH_DIR})
+target_link_libraries(llama INTERFACE aidaptiv)
+
+add_custom_command(TARGET llama POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    $<TARGET_FILE:aidaptiv>
+    $<TARGET_FILE_DIR:llama>
+)

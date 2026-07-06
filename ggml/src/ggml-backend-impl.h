@@ -26,6 +26,8 @@ extern "C" {
         size_t                (*get_alloc_size)(ggml_backend_buffer_type_t buft, const struct ggml_tensor * tensor);
         // (optional) check if tensor data is in host memory and uses standard ggml tensor layout (defaults to false)
         bool                  (*is_host)       (ggml_backend_buffer_type_t buft);
+        // (optional) max buffer size that can be allocated (limited by hardware) (defaults to SIZE_MAX)
+        size_t                (*max_buft_allocate_size) (ggml_backend_buffer_type_t buft, enum ggml_op op);
     };
 
     struct ggml_backend_buffer_type {
@@ -59,6 +61,8 @@ extern "C" {
         void         (*clear)        (ggml_backend_buffer_t buffer, uint8_t value);
         // (optional) reset any internal state due to tensor initialization, such as tensor extras
         void         (*reset)        (ggml_backend_buffer_t buffer);
+        ggml_backend_staging_buffer (*alloc_stage_buf)(ggml_backend_buffer_t buffer, size_t size);
+        void                        (*expert_tensor_set)(void * data, ggml_expert_tensor * const experts, const uint32_t n_experts);
     };
 
     struct ggml_backend_buffer {

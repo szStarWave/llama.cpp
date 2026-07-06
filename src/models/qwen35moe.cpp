@@ -54,11 +54,33 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader & ml) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
     }
 
+    const int64_t n_ff_exp   = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
+    const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
+
+    const auto is_mtp_layer = [&](uint32_t i) -> bool {
+        return hparams.n_layer_nextn > 0 && i >= (hparams.n_layer_all - hparams.n_layer_nextn);
+    };
+
+    const auto is_moe_layer = [&](uint32_t i) -> bool {
+        return !is_mtp_layer(i);
+    };
+
+    const expert_tensor_params expert_params = {
+        { LLM_TENSOR_FFN_GATE_EXPS, "weight", { n_embd, n_ff_exp }, true },
+        { LLM_TENSOR_FFN_DOWN_EXPS, "weight", { n_ff_exp, n_embd }, true },
+        { LLM_TENSOR_FFN_UP_EXPS,   "weight", { n_embd, n_ff_exp }, true },
+        { LLM_TENSOR_FFN_GATE_UP_EXPS,   "weight", { n_embd, n_ff_exp * 2 }, true }
+    };
+
+    auto expert_mapping_table = is_moe_offload_enabled() && !mtp_only ? distribute_expert_tensor(expert_params, n_layer, is_moe_layer) :
+                                                std::unordered_map<std::string, ggml_tensor *>{};
+
+    if (is_moe_offload_enabled() && !mtp_only) {
+        offload_expert(expert_params, n_layer, is_moe_layer, n_expert);
+    }
+
     auto load_block_trunk = [&](int il, int flags) {
         auto & layer = layers[il];
-
-        const int64_t n_ff_exp   = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
-        const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff;
 
         // Calculate dimensions from hyperparameters
         const int64_t head_k_dim = hparams.ssm_d_state;
@@ -94,10 +116,16 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader & ml) {
             layer.ssm_out        = create_tensor(tn(LLM_TENSOR_SSM_OUT,        "weight", il), { value_dim, n_embd }, flags);
         }
 
-        // Routed experts
         layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", il), { n_embd, n_expert }, flags);
-        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", il), { n_ff_exp, n_embd, n_expert }, flags);
-        create_tensor_gate_up_exps(layer, il, n_embd, n_ff_exp, n_expert, flags);
+        if (is_moe_offload_enabled() && !need_exclude(il) && !mtp_only) {
+            layer.ffn_gate_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", il).str()];
+            layer.ffn_down_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", il).str()];
+            layer.ffn_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", il).str()];
+            layer.ffn_gate_up_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", il).str()];
+        } else {
+            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", il), { n_ff_exp, n_embd, n_expert }, flags);
+            create_tensor_gate_up_exps(layer, il, n_embd, n_ff_exp, n_expert, flags);
+        }
 
         // Shared experts
         layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", il), { n_embd }, flags);
@@ -146,6 +174,10 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader & ml) {
     }
     for (int i = n_layer; i < n_layer_all; ++i) {
         load_block_mtp(i);
+    }
+
+    if (is_moe_offload_enabled() && !mtp_only) {
+        create_expert_manager(expert_mapping_table, expert_params, n_layer, is_moe_layer);
     }
 }
 

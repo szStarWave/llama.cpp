@@ -82,6 +82,13 @@ ggml_backend_dev_t ggml_backend_buft_get_device(ggml_backend_buffer_type_t buft)
     return buft->device;
 }
 
+size_t ggml_backend_max_buft_allocate_size(ggml_backend_buffer_type_t buft, enum ggml_op op) {
+    if (buft == NULL || buft->iface.max_buft_allocate_size == NULL) {
+        return SIZE_MAX;
+    }
+    return buft->iface.max_buft_allocate_size(buft, op);
+}
+
 // backend buffer
 
 ggml_backend_buffer_t ggml_backend_buffer_init(
@@ -336,6 +343,18 @@ void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, siz
     buf->iface.set_tensor(buf, tensor, data, offset, size);
 }
 
+void ggml_backend_expert_tensor_set(struct ggml_tensor * tensor, void * data, ggml_expert_tensor * const experts, const uint32_t n_experts) {
+    GGML_ASSERT(tensor);
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+
+    GGML_ASSERT(buf != NULL && "tensor buffer not set");
+    GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
+
+    GGML_ASSERT(n_experts > 0);
+
+    buf->iface.expert_tensor_set(data, experts, n_experts);
+}
+
 void ggml_backend_tensor_get(const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
@@ -393,6 +412,29 @@ void ggml_backend_tensor_get_2d(const struct ggml_tensor * tensor, void * data, 
     GGML_ASSERT(offset + (n_copies-1)*stride_tensor + size <= ggml_nbytes(tensor) && "tensor read out of bounds");
 
     buf->iface.get_tensor_2d(buf, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
+}
+
+ggml_backend_staging_buffer ggml_backend_alloc_staging_buf(const struct ggml_tensor * tensor, size_t size) {
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+
+    if (buf->iface.alloc_stage_buf == NULL) {
+        return ggml_backend_staging_buffer{ NULL, NULL };
+    }
+
+    return buf->iface.alloc_stage_buf(buf, size);
+}
+
+bool ggml_backend_support_alloc_stage_buf(const struct ggml_tensor * tensor) {
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    return buf != NULL && buf->iface.alloc_stage_buf != NULL;
+}
+
+size_t ggml_backend_max_stage_buf_size(const struct ggml_tensor * tensor) {
+    ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+    if (buf == NULL || buf->iface.alloc_stage_buf == NULL) {
+        return SIZE_MAX;
+    }
+    return ggml_backend_max_buft_allocate_size(buf->buft, GGML_OP_NONE);
 }
 
 void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
@@ -702,6 +744,8 @@ static const struct ggml_backend_buffer_i ggml_backend_multi_buffer_i = {
     /* .cpy_tensor      = */ NULL,
     /* .clear           = */ ggml_backend_multi_buffer_clear,
     /* .reset           = */ NULL,
+    /* .alloc_stage_buf = */ NULL,
+    /* .expert_tensor_set  = */ NULL,
 };
 
 ggml_backend_buffer_t ggml_backend_multi_buffer_alloc_buffer(ggml_backend_buffer_t * buffers, size_t n_buffers) {
@@ -2276,6 +2320,8 @@ static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_i = {
     /* .cpy_tensor      = */ ggml_backend_cpu_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_cpu_buffer_clear,
     /* .reset           = */ NULL,
+    /* .alloc_stage_buf = */ NULL,
+    /* .expert_tensor_set  = */ NULL,
 };
 
 static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_from_ptr_i = {
@@ -2290,6 +2336,8 @@ static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_from_ptr_i = {
     /* .cpy_tensor      = */ ggml_backend_cpu_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_cpu_buffer_clear,
     /* .reset           = */ NULL,
+    /* .alloc_stage_buf = */ NULL,
+    /* .expert_tensor_set  = */ NULL,
 };
 
 // CPU backend buffer type

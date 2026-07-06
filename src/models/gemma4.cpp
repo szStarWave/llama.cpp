@@ -59,6 +59,24 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
 
     int rope_freqs_flag = 0;
 
+    const auto is_moe_layer = [&](uint32_t i) -> bool {
+        return ml->get_tensor_meta(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i).str().c_str()) != nullptr;
+    };
+
+    const expert_tensor_params expert_params = {
+        { LLM_TENSOR_FFN_GATE_EXPS, "weight", { n_embd, n_ff_exp }, true },
+        { LLM_TENSOR_FFN_DOWN_EXPS, "weight", { n_ff_exp, n_embd }, false },
+        { LLM_TENSOR_FFN_UP_EXPS,   "weight", { n_embd, n_ff_exp }, true },
+        { LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", { n_embd, n_ff_exp * 2 }, true }
+    };
+
+    auto expert_mapping_table = is_moe_offload_enabled() ? distribute_expert_tensor(expert_params, n_layer, is_moe_layer) :
+                                                std::unordered_map<std::string, ggml_tensor *>{};
+
+    if (is_moe_offload_enabled()) {
+        offload_expert(expert_params, n_layer, is_moe_layer, n_expert);
+    }
+
     for (int i = 0; i < n_layer; ++i) {
         auto & layer = layers[i];
         const int64_t n_head      = hparams.n_head(i);
@@ -110,14 +128,19 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
             layer.ffn_post_norm_2 = create_tensor(tn(LLM_TENSOR_FFN_POST_NORM_2, "weight", i), {n_embd}, 0);
 
             // MoE FFN
-            layer.ffn_gate_up_exps  = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS,  "weight", i), {n_embd, n_ff_exp * 2, n_expert}, TENSOR_NOT_REQUIRED);
-
-            if (layer.ffn_gate_up_exps == nullptr) {
-                layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp, n_expert}, 0);
-                layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd, n_ff_exp, n_expert}, 0);
+            if (is_moe_offload_enabled() && !need_exclude(i)) {
+                layer.ffn_gate_exps      = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
+                layer.ffn_down_exps      = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
+                layer.ffn_up_exps        = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i).str()];
+                layer.ffn_gate_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", i).str()];
+            } else {
+                layer.ffn_gate_up_exps  = create_tensor(tn(LLM_TENSOR_FFN_GATE_UP_EXPS,  "weight", i), {n_embd, n_ff_exp * 2, n_expert}, TENSOR_NOT_REQUIRED);
+                    if (layer.ffn_gate_up_exps == nullptr) {
+                    layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp, n_expert}, 0);
+                    layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd, n_ff_exp, n_expert}, 0);
+                }
+                layer.ffn_down_exps     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS,     "weight", i), {n_ff_exp, n_embd, n_expert}, 0);
             }
-
-            layer.ffn_down_exps     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS,     "weight", i), {n_ff_exp, n_embd, n_expert}, 0);
 
             // per-expert scale will be loaded as down_exps_s at the end of the current switch case
         }
@@ -128,6 +151,10 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
             layer.per_layer_proj       = create_tensor(tn(LLM_TENSOR_PER_LAYER_PROJ,      "weight", i), {n_embd_per_layer, n_embd}, 0);
             layer.per_layer_post_norm  = create_tensor(tn(LLM_TENSOR_PER_LAYER_POST_NORM, "weight", i), {n_embd}, 0);
         }
+    }
+
+    if (is_moe_offload_enabled()) {
+        create_expert_manager(expert_mapping_table, expert_params, n_layer, is_moe_layer);
     }
 }
 
@@ -314,9 +341,9 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
             cb(cur_moe, "ffn_norm_2", il);
 
             // custom MoE logits calculation (router operates on attn_out, not cur)
-            ggml_tensor * tmp = ggml_rms_norm(ctx0, attn_out, hparams.f_norm_rms_eps);
+            // fuse rms_norm + mul(ffn_gate_inp_s) into one RMS_NORM_MUL dispatch; keep constant scale separate
+            ggml_tensor * tmp = build_norm(attn_out, model.layers[il].ffn_gate_inp_s, nullptr, LLM_NORM_RMS, il);
             tmp = ggml_scale(ctx0, tmp, 1.0f / sqrtf((float) n_embd));
-            tmp = ggml_mul(ctx0, tmp, model.layers[il].ffn_gate_inp_s);
             ggml_tensor * logits = build_lora_mm(model.layers[il].ffn_gate_inp, tmp); // [n_expert, n_tokens]
             cb(logits, "ffn_moe_logits", il);
 

@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <mutex>
 #include <regex>
+#include <thread>
 
 static const size_t kiB = 1024;
 static const size_t MiB = 1024*kiB;
@@ -527,7 +529,8 @@ llama_model_loader::llama_model_loader(
         bool check_tensors,
         bool no_alloc,
         const llama_model_kv_override * param_overrides_p,
-        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
+        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p,
+        int8_t param_requant)
         : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
     int trace = 0;
     if (getenv("LLAMA_TRACE")) {
@@ -541,6 +544,7 @@ llama_model_loader::llama_model_loader(
     }
 
     tensor_buft_overrides = param_tensor_buft_overrides_p;
+    // requant_enabled is resolved later, once arch_name is known (see end of ctor).
 
     if (!fname.empty()) {
         // Load the main GGUF
@@ -821,6 +825,36 @@ llama_model_loader::llama_model_loader(
         use_mmap = false;
     }
 
+    // Resolve -rq tri-state now that arch_name is known.
+    // -1 = auto (on for qwen35/qwen35moe/gemma4/qwen3), 0 = off, 1 = on.
+    {
+        const bool arch_default_requant = (arch_name == "qwen35"    ||
+                                           arch_name == "qwen35moe" ||
+                                           arch_name == "gemma4"    ||
+                                           arch_name == "qwen3");
+        const bool arch_allows_requant  = arch_default_requant;
+        if (param_requant == 1) {
+            requant_enabled = arch_allows_requant;
+            if (!arch_allows_requant) {
+                LLAMA_LOG_WARN("%s: -rq on requested but arch '%s' is not supported; ignoring.\n",
+                               __func__, arch_name.c_str());
+            }
+        } else if (param_requant == 0) {
+            requant_enabled = false;
+        } else {
+            // auto
+            requant_enabled = arch_default_requant;
+            if (requant_enabled) {
+                LLAMA_LOG_INFO("%s: arch '%s' detected; -rq defaults to ON (pass -rq off to disable).\n",
+                               __func__, arch_name.c_str());
+            }
+        }
+        if (requant_enabled && use_mmap) {
+            LLAMA_LOG_INFO("%s: requant active; disabling mmap so the load-time transform can run.\n", __func__);
+            use_mmap = false;
+        }
+    }
+
     this->use_mmap = use_mmap;
     this->use_direct_io = use_direct_io;
     this->check_tensors = check_tensors;
@@ -1038,22 +1072,25 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
 }
 
 // find the first buffer type in the list that can use the tensor
-static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hparams, ggml_tensor * tensor, ggml_op op, const buft_list_t * buft_list) {
+static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hparams, ggml_tensor * tensor, ggml_op op, const buft_list_t * buft_list, bool no_extra_bufts) {
     GGML_ASSERT(!buft_list->empty());
     for (const auto & cur : *buft_list) {
         ggml_backend_dev_t cur_dev = cur.first;
         ggml_backend_buffer_type_t cur_buft = cur.second;
         if (weight_buft_supported(hparams, tensor, op, cur_buft, cur_dev)) {
-            return cur_buft;
+            if (!no_extra_bufts || strcmp("CPU_REPACK", ggml_backend_buft_name(cur_buft)) != 0) {
+                return cur_buft;
+            }
         }
     }
 
     return nullptr;
 }
 
-struct ggml_tensor * llama_model_loader::create_tensor(
-        const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
-        const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
+// This function is extracted from `llama_model_loader::create_tensor(...)`.
+std::pair<ggml_context *, ggml_backend_buffer_type_t> llama_model_loader::get_suitable_ctx(const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
+        const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::vector<int64_t> & ne, int flags, bool no_extra_bufts) {
+    
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
@@ -1169,7 +1206,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
                 if (std::regex_search(tensor_name, pattern)) {
                     if (overrides->buft == ggml_backend_cpu_buffer_type()) {
                         // when overriding to a CPU buffer, consider the extra buffer types
-                        buft = select_weight_buft(hparams, t_meta, op, buft_list_cpu);
+                        buft = select_weight_buft(hparams, t_meta, op, buft_list_cpu, no_extra_bufts);
                         if (use_mmap) {
                             static std::once_flag once;
                             std::call_once(once, [] {
@@ -1190,7 +1227,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         }
 
         if (!buft) {
-            buft = select_weight_buft(hparams, t_meta, op, buft_list);
+            buft = select_weight_buft(hparams, t_meta, op, buft_list, no_extra_bufts);
             if (!buft) {
                 throw std::runtime_error(format("failed to find a compatible buffer type for tensor %s", tn.str().c_str()));
             }
@@ -1198,7 +1235,8 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
         // avoid using a host buffer when using mmap
         auto * buft_dev = ggml_backend_buft_get_device(buft);
-        if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
+        ggml_backend_buffer_type_t host_buft = buft_dev ? ggml_backend_dev_host_buffer_type(buft_dev) : nullptr;
+        if (use_mmap && buft_dev && buft == host_buft) {
             auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
             if (!cpu_dev) {
                 throw std::runtime_error("no CPU backend found");
@@ -1218,6 +1256,55 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
         return buft;
     };
+
+    if (files.empty()) {
+        if (flags & TENSOR_SKIP_IF_VIRTUAL) {
+            return {nullptr, nullptr};
+        }
+        ggml_type type = GGML_TYPE_F32;
+        const int64_t tid = gguf_find_tensor(metadata, tn.str().c_str());
+        if (tid != -1) {
+            type = gguf_get_tensor_type(metadata, tid);
+        }
+
+        // for tensors that are not required some of the dimensions can be invalid:
+        if (flags & TENSOR_NOT_REQUIRED) {
+            for (size_t dim = 0; dim < ne.size(); dim++) {
+                if (ne.begin()[dim] <= 0) {
+                    return {nullptr, nullptr};
+                }
+            }
+        }
+
+        ggml_tensor t_meta;
+        memset(&t_meta, 0, sizeof(ggml_tensor));
+        t_meta.type = type;
+        for (size_t dim = 0; dim < GGML_MAX_DIMS; dim++) {
+            t_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
+            GGML_ASSERT(t_meta.ne[dim] >= 1);
+            t_meta.nb[dim] = dim == 0 ? ggml_type_size(type) : t_meta.ne[dim-1]*t_meta.nb[dim-1];
+            GGML_ASSERT(t_meta.nb[dim] >= 1);
+        }
+        ggml_set_name(&t_meta, tn.str().c_str());
+
+        ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
+        GGML_ASSERT(buft != nullptr);
+        ggml_context * ctx = ctx_for_buft(buft);
+        return {ctx, buft};
+    }
+
+    ggml_tensor * t_meta = get_tensor_meta(tn.str().c_str());
+    ggml_backend_buffer_type_t buft = buft_for_tensor(t_meta);
+    if (buft == nullptr) {
+        return {nullptr, nullptr}; // return type is ggml_tensor *
+    }
+    ggml_context * ctx = ctx_for_buft(buft);
+    return {ctx, buft};
+}
+
+struct ggml_tensor * llama_model_loader::create_tensor(
+        const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
+        const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
 
     if (files.empty()) {
         if (flags & TENSOR_SKIP_IF_VIRTUAL) {
@@ -1249,20 +1336,19 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         }
         ggml_set_name(&t_meta, tn.str().c_str());
 
-        ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
-        GGML_ASSERT(buft != nullptr);
-        ggml_context * ctx = ctx_for_buft(buft);
+        std::vector<int64_t> ne_list(ne);
+        auto [ctx, buft] = get_suitable_ctx(hparams, buft_list_cpu, buft_list_input, buft_list_output,buft_list_layer, tn, ne_list, flags, false);
+
         ggml_tensor * ret = ggml_dup_tensor(ctx, &t_meta);
         ggml_set_name(ret, tn.str().c_str());
         return ret;
     }
 
-    ggml_tensor * t_meta = get_tensor_meta(tn.str().c_str());
-    ggml_backend_buffer_type_t buft = buft_for_tensor(t_meta);
+    std::vector<int64_t> ne_list(ne);
+    auto [ctx, buft] = get_suitable_ctx(hparams, buft_list_cpu, buft_list_input, buft_list_output,buft_list_layer, tn, ne_list, flags, false);
     if (buft == nullptr) {
         return nullptr; // return type is ggml_tensor *
     }
-    ggml_context * ctx = ctx_for_buft(buft);
 
     // if duplicated, check if the original tensor was allocated in the same buffer type context and avoid creating a new one
     if (flags & TENSOR_DUPLICATED) {
@@ -1283,6 +1369,106 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, cur);
     ggml_set_name(tensor, ggml_get_name(cur));
+
+    // Apply load-time requant ("R3" mix): rewrite the working tensor's type
+    // and strides so the backend buffer is sized for the target type before
+    // allocation. The original disk type is preserved in requant_orig_type
+    // and consumed by load_all_data() to perform dequant -> requant on read.
+    //
+    // Pattern sets are arch-specific. They match as substrings against the
+    // fully-qualified tensor name (e.g. "blk.7.attn_q.weight").
+    //   qwen35/qwen35moe: always-on Q8_0 projections in hybrid Qwen3.5-MoE
+    //                     (attention + shared expert + SSM output).
+    //   gemma4:           dense attention + per-layer FFN (which serves as
+    //                     the shared expert in MoE layers; see llama-model.cpp
+    //                     LLM_ARCH_GEMMA4 build block). Routed experts
+    //                     (ffn_gate_up_exps / ffn_down_exps) are intentionally
+    //                     not included.
+    //   qwen3:            attn_k/attn_v/ffn_down (q6_K -> Q4_K).
+    const bool requant_arch_ok =
+        arch_name == "qwen35" || arch_name == "qwen35moe" ||
+        arch_name == "gemma4" || arch_name == "qwen3";
+    if (requant_enabled && requant_arch_ok && ggml_is_quantized(tensor->type) && tensor->type != GGML_TYPE_Q4_K) {
+        // Each pattern entry: substring, primary target type, fallback type.
+        // Fallback is consulted only when ne[0] is not divisible by the primary
+        // type's block size (e.g. K-quants have super-block 256). Use
+        // GGML_TYPE_COUNT to mean "no fallback — skip on alignment fail".
+        struct r3_pat {
+            const char * pat;
+            ggml_type    type;
+            ggml_type    fallback;
+        };
+        static const r3_pat r3_patterns_qwen35[] = {
+            {"attn_q.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_k.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_v.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_output.weight",     GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_qkv.weight",        GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_gate.weight",       GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ssm_out.weight",         GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ffn_gate_shexp.weight",  GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ffn_up_shexp.weight",    GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ffn_down_shexp.weight",  GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+        };
+        static const r3_pat r3_patterns_gemma4[] = {
+            {"attn_q.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_k.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_v.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_output.weight",     GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ffn_gate.weight",        GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ffn_up.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ffn_down.weight",        GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+        };
+        // qwen3: attn_k/attn_v/ffn_down single-tier downgrade q6_K -> Q4_K.
+        static const r3_pat r3_patterns_qwen3[] = {
+            {"attn_k.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"attn_v.weight",          GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+            {"ffn_down.weight",        GGML_TYPE_Q4_K, GGML_TYPE_COUNT},
+        };
+        const r3_pat * r3_patterns  = r3_patterns_qwen35;
+        size_t         r3_npatterns = sizeof(r3_patterns_qwen35) / sizeof(r3_patterns_qwen35[0]);
+        if (arch_name == "gemma4") {
+            r3_patterns  = r3_patterns_gemma4;
+            r3_npatterns = sizeof(r3_patterns_gemma4) / sizeof(r3_patterns_gemma4[0]);
+        } else if (arch_name == "qwen3") {
+            r3_patterns  = r3_patterns_qwen3;
+            r3_npatterns = sizeof(r3_patterns_qwen3) / sizeof(r3_patterns_qwen3[0]);
+        }
+        const char * name = ggml_get_name(tensor);
+        for (size_t i = 0; i < r3_npatterns; ++i) {
+            const r3_pat & p = r3_patterns[i];
+            if (!strstr(name, p.pat)) continue;
+            ggml_type new_type = p.type;
+            int       blck     = ggml_blck_size(new_type);
+            if (tensor->ne[0] % blck != 0) {
+                if (p.fallback != GGML_TYPE_COUNT &&
+                    tensor->ne[0] % ggml_blck_size(p.fallback) == 0) {
+                    new_type = p.fallback;
+                    blck     = ggml_blck_size(new_type);
+                } else {
+                    LLAMA_LOG_WARN("%s: requant skipped for %s: ne[0]=%lld not divisible by %s block %d\n",
+                        __func__, name, (long long) tensor->ne[0],
+                        ggml_type_name(p.type), ggml_blck_size(p.type));
+                    break;
+                }
+            }
+            const ggml_type orig_type = tensor->type;
+            tensor->type  = new_type;
+            tensor->nb[0] = ggml_type_size(new_type);
+            tensor->nb[1] = tensor->nb[0] * (tensor->ne[0] / blck);
+            for (int d = 2; d < GGML_MAX_DIMS; d++) {
+                tensor->nb[d] = tensor->nb[d-1] * tensor->ne[d-1];
+            }
+            requant_orig_type[name] = orig_type;
+#ifdef LLAMA_REQUANT_TRACE
+            LLAMA_LOG_INFO("%s: load-time requant: %-40s %s -> %s (%6.1f -> %6.1f MiB)\n",
+                __func__, name, ggml_type_name(orig_type), ggml_type_name(new_type),
+                ggml_nbytes(cur) / 1024.0 / 1024.0,
+                ggml_nbytes(tensor) / 1024.0 / 1024.0);
+#endif
+            break;
+        }
+    }
 
     if (duplicated) {
         size_data += ggml_nbytes(cur);
@@ -1427,7 +1613,23 @@ bool llama_model_loader::load_all_data(
     GGML_ASSERT(size_data != 0 && "call init_mappings() first");
 
     std::vector<no_init<uint8_t>> read_buf;
+    std::vector<no_init<uint8_t>> requant_dst_buf;     // staging for requantized output bytes
+    std::vector<no_init<float>>   requant_f32_buf;     // staging for dequantized F32 values
     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
+
+    // Worker count for load-time requant. Override with LLAMA_REQUANT_THREADS.
+    int requant_nthread = 0;
+    if (!requant_orig_type.empty()) {
+        if (const char * env = getenv("LLAMA_REQUANT_THREADS")) {
+            requant_nthread = atoi(env);
+        }
+        if (requant_nthread <= 0) {
+            requant_nthread = (int) std::thread::hardware_concurrency();
+        }
+        if (requant_nthread <= 0) {
+            requant_nthread = 4;
+        }
+    }
 
     // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
     // NVMe raid configurations might require more / larger buffers.
@@ -1542,6 +1744,79 @@ bool llama_model_loader::load_all_data(
 
         size_t n_size = ggml_nbytes(cur);
 
+        // Detect load-time requant: cur->type is the (possibly rewritten) target type;
+        // the on-disk source type is recovered from requant_orig_type.
+        auto requant_it = requant_orig_type.find(ggml_get_name(cur));
+        const bool is_requant = requant_it != requant_orig_type.end();
+        const ggml_type orig_type = is_requant ? requant_it->second : cur->type;
+        const size_t disk_n_size = is_requant
+            ? ggml_row_size(orig_type, cur->ne[0]) * (ggml_nelements(cur) / cur->ne[0])
+            : n_size;
+
+        // Lambda: dequant `src` (orig_type) -> F32 -> requant to cur->type, then upload.
+        // Both phases are parallelized across requant_nthread workers.
+        auto requant_and_set = [&](const uint8_t * src) {
+            const int64_t nelements = ggml_nelements(cur);
+            const int64_t n_per_row = cur->ne[0];
+            const int64_t nrows     = nelements / n_per_row;
+            const ggml_type_traits * qt = ggml_get_type_traits(orig_type);
+            GGML_ASSERT(qt && qt->to_float);
+
+            requant_f32_buf.resize(nelements);
+            float * f32_ptr = reinterpret_cast<float *>(requant_f32_buf.data());
+            requant_dst_buf.resize(n_size);
+            void * dst_ptr = reinterpret_cast<void *>(requant_dst_buf.data());
+
+            const int nth = std::max(1, requant_nthread);
+
+            // Phase 1: parallel dequant. Split source blocks across workers.
+            // qt->to_float can run on any element count that is a multiple of the
+            // source block size; we honour that by chunking in whole blocks.
+            const int64_t src_blck   = ggml_blck_size(orig_type);
+            const size_t  src_blck_b = ggml_type_size(orig_type);
+            GGML_ASSERT(nelements % src_blck == 0);
+            const int64_t total_blocks = nelements / src_blck;
+
+            auto dequant_worker = [&](int tid) {
+                const int64_t per      = total_blocks / nth;
+                const int64_t leftover = total_blocks - per * nth;
+                const int64_t start_blk = tid * per + std::min<int64_t>(tid, leftover);
+                const int64_t my_blocks = per + (tid < leftover ? 1 : 0);
+                if (my_blocks == 0) return;
+                const int64_t my_elems = my_blocks * src_blck;
+                qt->to_float(src + start_blk * src_blck_b,
+                             f32_ptr + start_blk * src_blck,
+                             my_elems);
+            };
+
+            std::vector<std::thread> workers;
+            workers.reserve(nth - 1);
+            for (int t = 1; t < nth; t++) workers.emplace_back(dequant_worker, t);
+            dequant_worker(0);
+            for (auto & w : workers) w.join();
+            workers.clear();
+
+            // Phase 2: parallel requant. Split rows across workers.
+            // ggml_quantize_chunk uses its `start` arg (in elements) to compute
+            // both the source f32 offset and the dst byte offset, so we pass
+            // the unmodified base pointers.
+            auto quant_worker = [&](int tid) {
+                const int64_t per      = nrows / nth;
+                const int64_t leftover = nrows - per * nth;
+                const int64_t first_row = tid * per + std::min<int64_t>(tid, leftover);
+                const int64_t my_rows   = per + (tid < leftover ? 1 : 0);
+                if (my_rows == 0) return;
+                ggml_quantize_chunk(cur->type, f32_ptr, dst_ptr,
+                    first_row * n_per_row, my_rows, n_per_row, nullptr);
+            };
+
+            for (int t = 1; t < nth; t++) workers.emplace_back(quant_worker, t);
+            quant_worker(0);
+            for (auto & w : workers) w.join();
+
+            ggml_backend_tensor_set(cur, dst_ptr, 0, n_size);
+        };
+
         if (use_mmap) {
             const auto & mapping = mappings.at(weight->idx);
             ggml_backend_buffer_t buf_mmap = nullptr;
@@ -1550,7 +1825,7 @@ bool llama_model_loader::load_all_data(
             }
             uint8_t * data = (uint8_t *) mapping->addr() + weight->offs;
 
-            if (check_tensors) {
+            if (check_tensors && !is_requant) {
                 validation_result.emplace_back(std::async(std::launch::async, [cur, data, n_size] {
                     return std::make_pair(cur, ggml_validate_row_data(cur->type, data, n_size));
                 }));
@@ -1558,6 +1833,11 @@ bool llama_model_loader::load_all_data(
 
             GGML_ASSERT(buf_mmap || cur->data); // either we have a buffer to allocate the tensor in, or it is already allocated
             if (buf_mmap && cur->data == nullptr) {
+                if (is_requant) {
+                    throw std::runtime_error(format(
+                        "tensor '%s' selected for load-time requant but allocated to mmap zero-copy buffer; rerun with --no-mmap",
+                        ggml_get_name(cur)));
+                }
                 ggml_backend_tensor_alloc(buf_mmap, cur, data);
                 if (lmlocks) {
                     const auto & lmlock = lmlocks->at(weight->idx);
@@ -1567,6 +1847,8 @@ bool llama_model_loader::load_all_data(
                 auto & mmap_used = mmaps_used[weight->idx];
                 mmap_used.first  = std::min(mmap_used.first,  weight->offs);
                 mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
+            } else if (is_requant) {
+                requant_and_set(data);
             } else {
                 ggml_backend_tensor_set(cur, data, 0, n_size);
             }
@@ -1574,16 +1856,23 @@ bool llama_model_loader::load_all_data(
             const auto & file = files.at(weight->idx);
 
             if (ggml_backend_buffer_is_host(cur->buffer)) {
+                if (is_requant) {
+                    read_buf.resize(disk_n_size);
+                    file->seek(weight->offs, SEEK_SET);
+                    file->read_raw(read_buf.data(), disk_n_size);
+                    requant_and_set((const uint8_t *) read_buf.data());
+                } else {
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
                 if (check_tensors) {
                     validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
                         return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
                     }));
+                    }
                 }
             } else {
                 // If upload_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
-                if (upload_backend) {
+                if (upload_backend && !is_requant) {
                     size_t offset = weight->offs;
                     alignment = file->read_alignment();
                     size_t aligned_offset = offset & ~(alignment - 1);
@@ -1635,6 +1924,11 @@ bool llama_model_loader::load_all_data(
                         ++buffer_idx;
                         buffer_idx %= n_buffers;
                     }
+                } else if (is_requant) {
+                    read_buf.resize(disk_n_size);
+                    file->seek(weight->offs, SEEK_SET);
+                    file->read_raw(read_buf.data(), disk_n_size);
+                    requant_and_set((const uint8_t *) read_buf.data());
                 } else {
                     read_buf.resize(n_size);
                     file->seek(weight->offs, SEEK_SET);

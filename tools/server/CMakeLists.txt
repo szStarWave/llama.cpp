@@ -29,7 +29,9 @@ endif()
 
 target_include_directories(${TARGET} PRIVATE ../mtmd)
 target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
+target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR}/aidaptiv/include)
+target_compile_definitions(${TARGET} PRIVATE AIDAPTIV_SHARED)
+target_link_libraries(${TARGET} PUBLIC llama-common mtmd "${CMAKE_SOURCE_DIR}/aidaptiv/lib/aidaptiv.lib" ${CMAKE_THREAD_LIBS_INIT})
 
 # llama-server-impl: server logic, reusable by app
 
@@ -61,3 +63,10 @@ install(TARGETS ${TARGET} RUNTIME)
 
 target_link_libraries(${TARGET} PRIVATE llama-server-impl)
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
+
+if (EXISTS "${CMAKE_SOURCE_DIR}/aidaptiv/ada/ada.exe")
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/aidaptiv/ada/ada.exe"
+            $<TARGET_FILE_DIR:${TARGET}>)
+endif()
