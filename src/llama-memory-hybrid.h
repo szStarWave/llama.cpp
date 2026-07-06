@@ -28,16 +28,16 @@ public:
                  uint32_t   n_pad,
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
-                            /* recurrent */
+                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,
                  uint32_t   rs_size,
-                            /* common */
+                             /* common */
                  uint32_t   n_seq_max,
                  uint32_t   n_rs_seq,
                      bool   offload,
                      bool   unified,
-                            /* layer filters */
+                             /* layer filters */
     const layer_filter_cb & filter_attn = nullptr,
     const layer_filter_cb & filter_recr = nullptr);
 
@@ -75,6 +75,14 @@ public:
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
+
+    uint32_t get_size() const override;
+
+    uint32_t get_components() const override;
+    size_t get_cache_size(uint64_t node_size, uint32_t mask) const override;
+    void kv_cache_read (void* ptr, const size_t &node_stride, const uint32_t &node_size, const llama_seq_id &seq_id, const llama_pos &start_pos, const size_t &count, const bool is_last_node, uint32_t mask, const llama_pos * mrope_pos = nullptr) override;
+    void kv_cache_write(void* ptr, const size_t &node_stride, const uint32_t &node_size, const llama_seq_id &seq_id, const llama_pos &start_pos, const size_t &count, const bool is_last_node, uint32_t mask, const llama_pos * mrope_pos = nullptr) override;
+    void get_cached_positions(const llama_seq_id & seq_id, const size_t & count, bool * cached, uint32_t mask) const override;
 
     //
     // llama_memory_hybrid specific API

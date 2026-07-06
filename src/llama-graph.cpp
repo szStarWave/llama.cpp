@@ -12,6 +12,8 @@
 #include "llama-memory-hybrid-iswa.h"
 #include "llama-memory-recurrent.h"
 
+#include "aidaptiv-dispatch.h"
+
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -1053,7 +1055,9 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     cb_func          (params.cb),
     res              (params.res),
     ctx0             (res->get_ctx()),
-    gf               (res->get_gf()) {
+    gf               (res->get_gf()),
+    expert_mgr       (params.model ? params.model->expert_mgr : nullptr),
+    need_exclude     (params.model ? params.model->expert_need_exclude : std::function<bool(uint32_t)>{}) {
         res->set_params(params);
     }
 
@@ -1569,6 +1573,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
     cb(weights, "ffn_moe_weights", il);
 
+    ggml_tensor * original_selected_experts;
+    {
+        original_selected_experts = selected_experts;
+
+        if (expert_mgr != nullptr && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP &&
+                (!need_exclude || !need_exclude(il))) {
+            ggml_tensor * scheduled_selected_experts = g_aidaptiv->em_schedule_experts(ctx0, selected_experts, expert_mgr, il);
+            ggml_backend_sched_set_tensor_backend(sched, scheduled_selected_experts, backend_cpu);
+            selected_experts = scheduled_selected_experts;
+        }
+    }
 
     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT) {
         weights = ggml_reshape_2d(ctx0, weights, n_expert_used, n_tokens);
@@ -1626,7 +1641,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         if (up_exps_s) {
             ggml_tensor * s = ggml_reshape_3d(ctx0, up_exps_s, 1, n_expert, 1);
             s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
-            s = ggml_get_rows(ctx0, s, selected_experts); // [1, n_expert_used, n_tokens]
+            s = ggml_get_rows(ctx0, s, original_selected_experts); // [1, n_expert_used, n_tokens]
             gate_up = ggml_mul(ctx0, gate_up, s);
             cb(gate_up, "ffn_moe_gate_up_scaled", il);
         }
@@ -1650,7 +1665,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         if (up_exps_s) {
             ggml_tensor * s = ggml_reshape_3d(ctx0, up_exps_s, 1, n_expert, 1);
             s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
-            s = ggml_get_rows(ctx0, s, selected_experts); // [1, n_expert_used, n_tokens]
+            s = ggml_get_rows(ctx0, s, original_selected_experts); // [1, n_expert_used, n_tokens]
             up = ggml_mul(ctx0, up, s);
             cb(up, "ffn_moe_up_scaled", il);
         }
@@ -1671,7 +1686,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         if (gate_exps_s) {
             ggml_tensor * s = ggml_reshape_3d(ctx0, gate_exps_s, 1, n_expert, 1);
             s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
-            s = ggml_get_rows(ctx0, s, selected_experts); // [1, n_expert_used, n_tokens]
+            s = ggml_get_rows(ctx0, s, original_selected_experts); // [1, n_expert_used, n_tokens]
             cur = ggml_mul(ctx0, cur, s);
             cb(cur, "ffn_moe_gate_scaled", il);
         }
@@ -1758,7 +1773,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (down_exps_s) {
         ggml_tensor * s = ggml_reshape_3d(ctx0, down_exps_s, 1, n_expert, 1);
         s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
-        s = ggml_get_rows(ctx0, s, selected_experts); // [1, n_expert_used, n_tokens]
+        s = ggml_get_rows(ctx0, s, original_selected_experts); // [1, n_expert_used, n_tokens]
         experts = ggml_mul(ctx0, experts, s);
         cb(experts, "ffn_moe_down_scaled", il);
     }
