@@ -402,17 +402,23 @@ The table below lists suggested values for `vram_experts_cached_gb` (`-vc`) by G
 Cache hit rates are in **[0, 1]**:
 
 ```cpp
-// Prefill: VRAM expert cache hit rate.
-float llama_moe_get_prefill_vram_hit_rate(struct llama_context * ctx);
+// Single-token (n_tokens == 1): VRAM expert cache hit rate.
+float llama_moe_get_single_token_vram_hit_rate(struct llama_context * ctx);
 
-// Prefill: DRAM expert cache hit rate.
-float llama_moe_get_prefill_dram_hit_rate(struct llama_context * ctx);
+// Single-token (n_tokens == 1): DRAM expert cache hit rate.
+float llama_moe_get_single_token_dram_hit_rate(struct llama_context * ctx);
 
-// Decode: VRAM expert cache hit rate.
-float llama_moe_get_decode_vram_hit_rate(struct llama_context * ctx);
+// Multi-token (n_tokens > 1): VRAM expert cache hit rate.
+float llama_moe_get_multi_token_vram_hit_rate(struct llama_context * ctx);
 
-// Decode: DRAM expert cache hit rate.
-float llama_moe_get_decode_dram_hit_rate(struct llama_context * ctx);
+// Multi-token (n_tokens > 1): DRAM expert cache hit rate.
+float llama_moe_get_multi_token_dram_hit_rate(struct llama_context * ctx);
+
+// Combined VRAM expert cache hit rate.
+float llama_moe_get_vram_hit_rate(struct llama_context * ctx);
+
+// Combined DRAM expert cache hit rate.
+float llama_moe_get_dram_hit_rate(struct llama_context * ctx);
 
 // Reset all hit-rate counters.
 void llama_moe_reset_hit_rate(struct llama_context * ctx);

@@ -113,7 +113,7 @@ extern "C" {
         void * buff_struct;
         void * buff_ptr;
     } ggml_backend_staging_buffer;
-    GGML_API ggml_backend_staging_buffer ggml_backend_alloc_staging_buf(const struct ggml_tensor * tensor, size_t size); 
+    GGML_API ggml_backend_staging_buffer ggml_backend_alloc_staging_buf(const struct ggml_tensor * tensor, size_t size, void * host_ptr);
     GGML_API bool ggml_backend_support_alloc_stage_buf(const struct ggml_tensor * tensor);
     GGML_API size_t ggml_backend_max_stage_buf_size(const struct ggml_tensor * tensor);
 

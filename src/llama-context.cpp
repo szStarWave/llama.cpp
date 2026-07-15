@@ -3911,36 +3911,52 @@ void llama_memory_kv_write(llama_memory_t mem, void *ptr, const size_t node_stri
     mem->kv_cache_write(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, comp_mask);
 }
 
-float llama_moe_get_prefill_vram_hit_rate(struct llama_context * ctx) {
+float llama_moe_get_single_token_vram_hit_rate(struct llama_context * ctx) {
     const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
     if (model == nullptr || model->expert_mgr == nullptr) {
         return -1;
     }
-    return g_aidaptiv->em_get_prefill_vram_hit_rate(model->expert_mgr);
+    return g_aidaptiv->em_get_single_token_vram_hit_rate(model->expert_mgr);
 }
 
-float llama_moe_get_prefill_dram_hit_rate(struct llama_context * ctx) {
+float llama_moe_get_single_token_dram_hit_rate(struct llama_context * ctx) {
     const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
     if (model == nullptr || model->expert_mgr == nullptr) {
         return -1;
     }
-    return g_aidaptiv->em_get_prefill_dram_hit_rate(model->expert_mgr);
+    return g_aidaptiv->em_get_single_token_dram_hit_rate(model->expert_mgr);
 }
 
-float llama_moe_get_decode_vram_hit_rate(struct llama_context * ctx) {
+float llama_moe_get_multi_token_vram_hit_rate(struct llama_context * ctx) {
     const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
     if (model == nullptr || model->expert_mgr == nullptr) {
         return -1;
     }
-    return g_aidaptiv->em_get_decode_vram_hit_rate(model->expert_mgr);
+    return g_aidaptiv->em_get_multi_token_vram_hit_rate(model->expert_mgr);
 }
 
-float llama_moe_get_decode_dram_hit_rate(struct llama_context * ctx) {
+float llama_moe_get_multi_token_dram_hit_rate(struct llama_context * ctx) {
     const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
     if (model == nullptr || model->expert_mgr == nullptr) {
         return -1;
     }
-    return g_aidaptiv->em_get_decode_dram_hit_rate(model->expert_mgr);
+    return g_aidaptiv->em_get_multi_token_dram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_vram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_vram_hit_rate(model->expert_mgr);
+}
+
+float llama_moe_get_dram_hit_rate(struct llama_context * ctx) {
+    const llama_model * model = ctx ? llama_get_model(ctx) : nullptr;
+    if (model == nullptr || model->expert_mgr == nullptr) {
+        return -1;
+    }
+    return g_aidaptiv->em_get_dram_hit_rate(model->expert_mgr);
 }
 
 void llama_moe_reset_hit_rate(struct llama_context * ctx) {

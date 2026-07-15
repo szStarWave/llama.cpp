@@ -289,6 +289,7 @@ class vk_memory_logger;
 class vk_perf_logger;
 static void ggml_vk_destroy_buffer(vk_buffer& buf);
 static void ggml_vk_synchronize(ggml_backend_vk_context * ctx);
+static vk_buffer ggml_vk_buffer_from_host_ptr(vk_device & device, void * ptr, size_t size);
 
 static constexpr uint32_t mul_mat_vec_max_cols = 8;
 static constexpr uint32_t p021_max_gqa_ratio = 8;
@@ -968,6 +969,7 @@ struct vk_device_struct {
     std::vector<vk_pipeline_ref> all_pipelines;
 
     std::vector<std::tuple<void*, size_t, vk_buffer>> pinned_memory;
+    std::vector<vk_buffer> expert_staging_buffers;
 
     vk::Fence fence;
     vk_buffer sync_staging;
@@ -987,6 +989,8 @@ struct vk_device_struct {
         device.destroyFence(fence);
 
         ggml_vk_destroy_buffer(sync_staging);
+
+        expert_staging_buffers.clear();
 
         compute_queue.cmd_pool.destroy(device);
         transfer_queue.cmd_pool.destroy(device);
@@ -15450,25 +15454,40 @@ static void ggml_backend_vk_buffer_clear(ggml_backend_buffer_t buffer, uint8_t v
     ggml_vk_buffer_memset(ctx->dev_buffer, 0, value, buffer->size);
 }
 
-static std::vector<vk_buffer> stg_buf_pool;
-static ggml_backend_staging_buffer ggml_backend_vk_staging_buffer_alloc(ggml_backend_buffer_t buffer, size_t size) {
+static ggml_backend_staging_buffer ggml_backend_vk_staging_buffer_alloc(ggml_backend_buffer_t buffer, size_t size, void * host_ptr) {
     vk_device device = ((ggml_backend_vk_buffer_context *)buffer->context)->device.lock();
-    vk_buffer buf = ggml_vk_create_buffer(device, size,
-        {vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostCached,
-         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});  // TODO: This only available on iGPU
-    
-    if(!(buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible)) {
-        fprintf(stderr, "WARNING: failed to allocate %.2f MB of pinned memory\n",
-            size/1024.0/1024.0);
-        device->device.freeMemory(buf->device_memory);
-        device->device.destroyBuffer(buf->buffer);
+
+    if (host_ptr == nullptr) {
+        fprintf(stderr, "ggml_vulkan: staging_buffer_alloc requires an external host_ptr\n");
         return ggml_backend_staging_buffer { nullptr, nullptr };
     }
+    if (!device->external_memory_host) {
+        fprintf(stderr, "ggml_vulkan: VK_EXT_external_memory_host not supported by this device\n");
+        return ggml_backend_staging_buffer { nullptr, nullptr };
+    }
+
+    const size_t align = device->min_imported_host_pointer_alignment;
+    if (align == 0 || (align & (align - 1)) != 0) {
+        fprintf(stderr, "ggml_vulkan: invalid min_imported_host_pointer_alignment (%zu)\n", align);
+        return ggml_backend_staging_buffer { nullptr, nullptr };
+    }
+    if (reinterpret_cast<uintptr_t>(host_ptr) & (align - 1)) {
+        fprintf(stderr, "ggml_vulkan: host_ptr (%p) not aligned to %zu\n", host_ptr, align);
+        return ggml_backend_staging_buffer { nullptr, nullptr };
+    }
+    const size_t aligned_size = (size + align - 1) & ~(align - 1);
+
+    vk_buffer buf = ggml_vk_buffer_from_host_ptr(device, host_ptr, aligned_size);
+    if (!buf) {
+        fprintf(stderr, "ggml_vulkan: ggml_vk_buffer_from_host_ptr failed (size=%zu, aligned=%zu)\n", size, aligned_size);
+        return ggml_backend_staging_buffer { nullptr, nullptr };
+    }
+
+    device->expert_staging_buffers.push_back(buf);
+
     ggml_backend_staging_buffer rtn;
     rtn.buff_struct = reinterpret_cast<void *>(buf.get());
-    rtn.buff_ptr = buf->ptr;
-    stg_buf_pool.push_back(buf);
-
+    rtn.buff_ptr    = host_ptr;
     return rtn;
 }
 
@@ -15610,6 +15629,7 @@ ggml_backend_buffer_type_t ggml_backend_vk_host_buffer_type() {
             /* .get_max_size     = */ ggml_backend_vk_host_buffer_type_get_max_size,
             /* .get_alloc_size   = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,
             /* .is_host          = */ ggml_backend_cpu_buffer_type()->iface.is_host,
+            /* .max_buft_allocate_size = */ NULL,
         },
         /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_vk_reg(), 0),
         /* .context  = */ nullptr,

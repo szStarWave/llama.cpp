@@ -664,8 +664,8 @@ llama_model * llama_model_create(llm_arch arch, const llama_model_params & param
 llama_model * llama_model_create(llama_model_loader & ml, const llama_model_params & params);
 
 struct aidaptiv_moe_offload_params {
-    uint32_t    vram_experts_cached_gb = 0;
-    uint32_t    dram_experts_cached_gb = 0;
+    int32_t     vram_experts_cached_gb = 0;
+    int32_t     dram_experts_cached_gb = 0;
     int32_t     vram_experts_per_layer = -1;
     int32_t     dram_experts_per_layer = -1;
     int32_t     shared_buffer_layers   = -1;
