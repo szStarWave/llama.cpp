@@ -87,19 +87,32 @@ static ggml_tensor * ggml_mul_mat_aux(
     return res;
 }
 
-static ggml_tensor * llm_graph_crop_padded_heads(
+static ggml_tensor * llm_graph_apply_v_rot(
         ggml_context * ctx,
-        ggml_tensor  * cur,
-        int64_t        n_head,
-        int64_t        n_embd_head,
-        int64_t        n_embd_head_padded) {
-    if (n_embd_head_padded == n_embd_head) {
-        return cur;
+        ggml_tensor * cur,
+        ggml_tensor * rot,
+        int64_t n_head,
+        int64_t n_embd_head) {
+    const int64_t n_embd_head_padded = rot->ne[0];
+
+    // For turbo the rotation matrix is larger than the original head dim.
+    // Apply the inverse Hadamard per-head and crop the padding; otherwise the
+    // existing 2D path already handles sub-block rotations correctly.
+    if (n_embd_head_padded <= n_embd_head) {
+        return ggml_mul_mat_aux(ctx, cur, rot);
     }
 
-    cur = ggml_reshape_3d(ctx, cur, n_embd_head_padded, n_head, cur->ne[1]);
+    // cur is 2D: [n_embd_head_eff * n_head, n_tokens]
+    const int64_t n_embd_head_eff = cur->ne[0] / n_head;
+
+    GGML_ASSERT(n_embd_head_eff <= n_embd_head_padded);
+
+    cur = ggml_reshape_3d(ctx, cur, n_embd_head_eff, n_head, cur->ne[1]);
+    cur = ggml_mul_mat_aux(ctx, cur, rot);
+    // cur is now 4D: [n_embd_head_padded, n_head, n_tokens, 1]
+
     cur = ggml_view_3d(ctx, cur, n_embd_head, n_head, cur->ne[2], cur->nb[1], cur->nb[2], 0);
-    cur = ggml_cont_2d(ctx, cur, n_embd_head*n_head, cur->ne[2]);
+    cur = ggml_cont_2d(ctx, cur, n_embd_head * n_head, cur->ne[2]);
 
     return cur;
 }
@@ -2370,8 +2383,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (inp->self_v_rot) {
-        cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot);
-        cur = llm_graph_crop_padded_heads(ctx0, cur, hparams.n_head(il), hparams.n_embd_head_v(il), inp->self_v_rot->ne[0]);
+        cur = llm_graph_apply_v_rot(ctx0, cur, inp->self_v_rot, hparams.n_head(il), hparams.n_embd_head_v(il));
     }
 
     if (wo) {
@@ -2626,8 +2638,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (v_rot) {
-        cur = ggml_mul_mat_aux(ctx0, cur, v_rot);
-        cur = llm_graph_crop_padded_heads(ctx0, cur, hparams.n_head(il), hparams.n_embd_head_v(il), v_rot->ne[0]);
+        cur = llm_graph_apply_v_rot(ctx0, cur, v_rot, hparams.n_head(il), hparams.n_embd_head_v(il));
     }
 
     if (wo) {
