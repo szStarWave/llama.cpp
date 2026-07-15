@@ -94,11 +94,13 @@ struct aidaptiv_dispatch {
     void  (*em_destroy                   )(ExpertManager * mgr);
     bool  (*em_preload_experts           )(ExpertManager * mgr);
     void  (*em_set_tensor                )(ExpertManager * mgr, ggml_tensor * tensor, uint32_t il);
-    float (*em_get_prefill_vram_hit_rate )(const ExpertManager * mgr);
-    float (*em_get_prefill_dram_hit_rate )(const ExpertManager * mgr);
-    float (*em_get_decode_vram_hit_rate  )(const ExpertManager * mgr);
-    float (*em_get_decode_dram_hit_rate  )(const ExpertManager * mgr);
-    void  (*em_reset_hit_rate            )(ExpertManager * mgr);
+    float (*em_get_single_token_vram_hit_rate)(const ExpertManager * mgr);
+    float (*em_get_single_token_dram_hit_rate)(const ExpertManager * mgr);
+    float (*em_get_multi_token_vram_hit_rate )(const ExpertManager * mgr);
+    float (*em_get_multi_token_dram_hit_rate )(const ExpertManager * mgr);
+    float (*em_get_vram_hit_rate             )(const ExpertManager * mgr);
+    float (*em_get_dram_hit_rate             )(const ExpertManager * mgr);
+    void  (*em_reset_hit_rate                )(ExpertManager * mgr);
     ggml_tensor * (*em_schedule_experts  )(ggml_context * ctx, ggml_tensor * route_output, ExpertManager * mgr, int il);
 };
 

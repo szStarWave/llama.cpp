@@ -1048,6 +1048,7 @@ struct vk_device_struct {
     std::vector<vk_pipeline_ref> all_pipelines;
 
     std::vector<std::tuple<void*, size_t, vk_buffer>> pinned_memory;
+    std::vector<vk_buffer> expert_staging_buffers;
 
     std::vector<vk_buffer> expert_staging_buffers;
 

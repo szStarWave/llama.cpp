@@ -138,17 +138,23 @@ bool stub_em_preload_experts(ExpertManager *) {
 void stub_em_set_tensor(ExpertManager *, ggml_tensor *, uint32_t) {
     aidaptiv_not_loaded("em_set_tensor");
 }
-float stub_em_get_prefill_vram_hit_rate(const ExpertManager *) {
-    aidaptiv_not_loaded("em_get_prefill_vram_hit_rate");
+float stub_em_get_single_token_vram_hit_rate(const ExpertManager *) {
+    aidaptiv_not_loaded("em_get_single_token_vram_hit_rate");
 }
-float stub_em_get_prefill_dram_hit_rate(const ExpertManager *) {
-    aidaptiv_not_loaded("em_get_prefill_dram_hit_rate");
+float stub_em_get_single_token_dram_hit_rate(const ExpertManager *) {
+    aidaptiv_not_loaded("em_get_single_token_dram_hit_rate");
 }
-float stub_em_get_decode_vram_hit_rate(const ExpertManager *) {
-    aidaptiv_not_loaded("em_get_decode_vram_hit_rate");
+float stub_em_get_multi_token_vram_hit_rate(const ExpertManager *) {
+    aidaptiv_not_loaded("em_get_multi_token_vram_hit_rate");
 }
-float stub_em_get_decode_dram_hit_rate(const ExpertManager *) {
-    aidaptiv_not_loaded("em_get_decode_dram_hit_rate");
+float stub_em_get_multi_token_dram_hit_rate(const ExpertManager *) {
+    aidaptiv_not_loaded("em_get_multi_token_dram_hit_rate");
+}
+float stub_em_get_vram_hit_rate(const ExpertManager *) {
+    aidaptiv_not_loaded("em_get_vram_hit_rate");
+}
+float stub_em_get_dram_hit_rate(const ExpertManager *) {
+    aidaptiv_not_loaded("em_get_dram_hit_rate");
 }
 void stub_em_reset_hit_rate(ExpertManager *) {
     aidaptiv_not_loaded("em_reset_hit_rate");
@@ -204,10 +210,12 @@ const aidaptiv_dispatch stub_dispatch = {
     stub_em_destroy,
     stub_em_preload_experts,
     stub_em_set_tensor,
-    stub_em_get_prefill_vram_hit_rate,
-    stub_em_get_prefill_dram_hit_rate,
-    stub_em_get_decode_vram_hit_rate,
-    stub_em_get_decode_dram_hit_rate,
+    stub_em_get_single_token_vram_hit_rate,
+    stub_em_get_single_token_dram_hit_rate,
+    stub_em_get_multi_token_vram_hit_rate,
+    stub_em_get_multi_token_dram_hit_rate,
+    stub_em_get_vram_hit_rate,
+    stub_em_get_dram_hit_rate,
     stub_em_reset_hit_rate,
     stub_em_schedule_experts,
 };

@@ -61,7 +61,7 @@ extern "C" {
         void         (*clear)        (ggml_backend_buffer_t buffer, uint8_t value);
         // (optional) reset any internal state due to tensor initialization, such as tensor extras
         void         (*reset)        (ggml_backend_buffer_t buffer);
-        ggml_backend_staging_buffer (*alloc_stage_buf)(ggml_backend_buffer_t buffer, size_t size);
+        ggml_backend_staging_buffer (*alloc_stage_buf)(ggml_backend_buffer_t buffer, size_t size, void * host_ptr);
         void                        (*expert_tensor_set)(void * data, ggml_expert_tensor * const experts, const uint32_t n_experts);
     };
 

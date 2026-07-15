@@ -414,14 +414,14 @@ void ggml_backend_tensor_get_2d(const struct ggml_tensor * tensor, void * data, 
     buf->iface.get_tensor_2d(buf, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
 }
 
-ggml_backend_staging_buffer ggml_backend_alloc_staging_buf(const struct ggml_tensor * tensor, size_t size) {
+ggml_backend_staging_buffer ggml_backend_alloc_staging_buf(const struct ggml_tensor * tensor, size_t size, void * host_ptr) {
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
 
     if (buf->iface.alloc_stage_buf == NULL) {
         return ggml_backend_staging_buffer{ NULL, NULL };
     }
 
-    return buf->iface.alloc_stage_buf(buf, size);
+    return buf->iface.alloc_stage_buf(buf, size, host_ptr);
 }
 
 bool ggml_backend_support_alloc_stage_buf(const struct ggml_tensor * tensor) {

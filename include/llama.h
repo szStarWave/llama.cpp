@@ -329,8 +329,8 @@ extern "C" {
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
         const char * offload_folder;  // offload folder
-        uint32_t vram_experts_cached_gb;  // vram experts cache size, 0 = disable moe
-        uint32_t dram_experts_cached_gb;  // dram experts cache size
+        int32_t vram_experts_cached_gb;  // vram experts cache size, 0 = disable moe
+        int32_t dram_experts_cached_gb;  // dram experts cache size
         int32_t shared_buffer_layers;  // number layers per buffer
         uint64_t temp_uuid;  // temp cache uuid
         int8_t requant;       // load-time requant of always-on tensors to Q4_K. -1 = auto (on for qwen35/qwen35moe/gemma4/qwen3), 0 = off, 1 = on. Forces no-mmap when active.
@@ -805,10 +805,12 @@ extern "C" {
     LLAMA_API size_t llama_memory_kv_cache_size(llama_memory_t mem, uint64_t node_size, uint32_t comp_mask);
     LLAMA_API void   llama_memory_kv_read(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, uint32_t comp_mask, const llama_pos * mrope_pos);
     LLAMA_API void   llama_memory_kv_write(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, uint32_t comp_mask, const llama_pos * mrope_pos);
-    LLAMA_API float llama_moe_get_prefill_vram_hit_rate(struct llama_context * ctx);
-    LLAMA_API float llama_moe_get_prefill_dram_hit_rate(struct llama_context * ctx);
-    LLAMA_API float llama_moe_get_decode_vram_hit_rate(struct llama_context * ctx);
-    LLAMA_API float llama_moe_get_decode_dram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_single_token_vram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_single_token_dram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_multi_token_vram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_multi_token_dram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_vram_hit_rate(struct llama_context * ctx);
+    LLAMA_API float llama_moe_get_dram_hit_rate(struct llama_context * ctx);
     LLAMA_API void llama_moe_reset_hit_rate(struct llama_context * ctx);
 
     //
