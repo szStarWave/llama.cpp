@@ -780,7 +780,11 @@ extern "C" {
     // Check if the memory supports shifting
     LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
 
+#ifdef __cplusplus
     enum llama_memory_component_flag : uint32_t {
+#else
+    enum llama_memory_component_flag {
+#endif
         LLAMA_MEM_COMP_BASE_ATTN = 1u << 0,
         LLAMA_MEM_COMP_SWA_ATTN  = 1u << 1,
         LLAMA_MEM_COMP_RECURRENT = 1u << 2,
