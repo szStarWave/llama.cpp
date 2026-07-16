@@ -57,6 +57,19 @@ llama-cli -hf ggml-org/gemma-3-1b-it-GGUF
 llama-server -hf ggml-org/gemma-3-1b-it-GGUF
 ```
 
+### Windows portable builds
+
+When building Windows binaries for distribution to other machines, do not build with AVX512 or `GGML_NATIVE=ON`.
+Native builds can bake the build machine's CPU features into `ggml-cpu.dll`, which may fail on a different host.
+Use an AVX2 portable build instead:
+
+```bat
+cmake -S . -B build-portable -G "Visual Studio 17 2022" -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_UI=OFF
+cmake --build build-portable --config Release --target llama-server -j 8
+```
+
+Verify that `GGML_AVX2=ON` and `GGML_AVX512=OFF` in `build-portable/CMakeCache.txt` before packaging the binaries.
+
 ## Description
 
 The main goal of `llama.cpp` is to enable LLM inference with minimal setup and state-of-the-art performance on a wide
