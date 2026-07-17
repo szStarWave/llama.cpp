@@ -10354,6 +10354,9 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     bool xe_fa_supported_platform =
         (ctx->device.get()->architecture == INTEL_XE2 && ctx->device.get()->shader_core_count != 2) ||
         (ctx->device.get()->architecture == INTEL_XE1 && ctx->device.get()->coopmat_support && ctx->device.get()->uma);
+    bool xe_fa_supported_dtype =
+        q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_F16 && v->type == GGML_TYPE_F16 &&
+        (mask != nullptr && mask->type == GGML_TYPE_F16);
 
     vk_pipeline pipeline = nullptr;
     vk_pipeline xe_fa_pipeline = nullptr;
@@ -10375,7 +10378,7 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
 
         // AKDF custom FA shaders expect Q in head-interleaved layout [D, H, N] (from permute in inference).
         // Only use them when Q's token stride > head stride, indicating the permuted layout.
-        if (xe_fa_supported_platform && q->nb[1] > q->nb[2]) {
+        if (xe_fa_supported_platform && xe_fa_supported_dtype && q->nb[1] > q->nb[2]) {
             if (neq0 == 64 && (qk_ratio == 8 || qk_ratio == 4) && ctx->device->pipeline_flash_attn_hdim64 != nullptr) {
                 xe_fa_opt = true;
                 fa_copy_qstate = true;
