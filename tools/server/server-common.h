@@ -199,7 +199,7 @@ public:
     const llama_tokens & get_all_tokens() const;
 
     llama_tokens get_text_tokens() const;
-    std::vector<aidaptiv::mtmd_chunk_info> get_aidaptiv_mtmd_info() const;
+    std::vector<aidaptiv::mtmd_chunk_info> get_aidaptiv_mtmd_info(size_t n_tokens = (size_t) -1) const;
     size_t valid_keep_first(size_t n) const;
 
     // for compatibility with speculative decoding

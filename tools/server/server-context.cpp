@@ -867,7 +867,8 @@ private:
         // For recurrent/hybrid models, the restore API requires the token count
         // to be a multiple of the node size. For standard attention/ISWA models,
         // only complete nodes are used; trailing unaligned tokens are discarded.
-        const size_t aligned_tokens = all_tokens.size() - (all_tokens.size() % restore_node_size);
+        const size_t aligned_raw = all_tokens.size() - (all_tokens.size() % restore_node_size);
+        const size_t aligned_tokens = input_tokens.valid_keep_first(aligned_raw);
         if (aligned_tokens < 2) {
             SRV_DBG("phison_restore_slot skip: slot=%d all_tokens=%zu cannot fill a single node of size %zu (need at least 2 tokens for restore)\n",
                     slot.id, all_tokens.size(), restore_node_size);
@@ -881,7 +882,7 @@ private:
                 restore_tokens.empty() ? -1 : restore_tokens.front(),
                 restore_tokens.empty() ? -1 : restore_tokens.back());
 
-        const auto mtmd_info = input_tokens.get_aidaptiv_mtmd_info();
+        const auto mtmd_info = input_tokens.get_aidaptiv_mtmd_info(aligned_tokens);
         const auto loras = phison_active_loras(slot);
         SRV_DBG("phison_restore_slot call restore: slot=%d mtmd=%zu lora=%zu tokens=%zu\n",
                 slot.id, mtmd_info.size(), loras.size(), restore_tokens.size());
@@ -974,7 +975,6 @@ private:
             return false;
         }
 
-        const auto mtmd_info = slot.prompt.tokens.get_aidaptiv_mtmd_info();
         const auto loras = phison_active_loras(slot);
         size_t save_tokens = std::min(all_tokens.size(), max_tokens);
 
@@ -982,13 +982,14 @@ private:
         const size_t aligned_tokens = save_tokens - (save_tokens % node_size);
         SRV_DBG("phison_save_slot node-aligned align: slot=%d tokens=%zu aligned=%zu node_size=%zu trimmed=%zu\n",
                 slot.id, save_tokens, aligned_tokens, node_size, save_tokens - aligned_tokens);
-        save_tokens = aligned_tokens;
+        save_tokens = slot.prompt.tokens.valid_keep_first(aligned_tokens);
 
         if (save_tokens == 0) {
             SRV_DBG("phison_save_slot skip: slot=%d save_tokens=0 after alignment\n", slot.id);
             return false;
         }
 
+        const auto mtmd_info = slot.prompt.tokens.get_aidaptiv_mtmd_info(save_tokens);
         const uint64_t save_hash = stable_token_hash(all_tokens, save_tokens);
         if (save_tokens <= slot.phison_kv_saved_tokens && save_hash == slot.phison_kv_saved_hash) {
             if (flush && (save_tokens > slot.phison_kv_flushed_tokens || save_hash != slot.phison_kv_flushed_hash)) {
@@ -3143,8 +3144,9 @@ private:
                             slot.prompt.n_tokens(), p0, prompt_n_past, slot.prompt.tokens.pos_next(), slot.prompt.tokens.get_common_prefix(input_tokens));
 
                     const bool aiDAPTIV_enabled = aidaptiv_kv_enabled();
-                    const bool need_tail_rollback = p0 < slot.prompt.n_tokens();
-                    const int  rollback_n        = std::max(0, slot.prompt.n_tokens() - p0);
+                    const llama_pos kv_pos_max_before_trim = llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id);
+                    const bool need_tail_rollback = kv_pos_max_before_trim >= p0;
+                    const int  rollback_n        = std::max(0, kv_pos_max_before_trim - p0 + 1);
                     const bool rollback_supported =
                         !need_tail_rollback ||
                         ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
