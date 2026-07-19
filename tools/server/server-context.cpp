@@ -867,7 +867,8 @@ private:
         // For recurrent/hybrid models, the restore API requires the token count
         // to be a multiple of the node size. For standard attention/ISWA models,
         // only complete nodes are used; trailing unaligned tokens are discarded.
-        const size_t aligned_raw = all_tokens.size() - (all_tokens.size() % restore_node_size);
+        const size_t lookup_tokens = all_tokens.size() - 1;
+        const size_t aligned_raw = lookup_tokens - (lookup_tokens % restore_node_size);
         const size_t aligned_tokens = input_tokens.valid_keep_first(aligned_raw);
         if (aligned_tokens < 2) {
             SRV_DBG("phison_restore_slot skip: slot=%d all_tokens=%zu cannot fill a single node of size %zu (need at least 2 tokens for restore)\n",
@@ -1082,7 +1083,7 @@ private:
             sp.ssd_kv_offload_gb      = params.aidaptiv_ssd_kv_offload_gb;
             sp.dram_kv_offload_gb     = params.aidaptiv_dram_kv_offload_gb;
             sp.kv_cache_resume_policy = static_cast<uint32_t>(params.aidaptiv_kv_cache_resume_policy);
-            sp.flash_attn             = params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_ENABLED;
+            sp.flash_attn             = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
             sp.model_path             = params.model.path;
             sp.mmproj_model_path      = params.mmproj.path;
 
