@@ -440,15 +440,24 @@ llama_tokens server_tokens::get_text_tokens() const {
     return res;
 }
 
-std::vector<aidaptiv::mtmd_chunk_info> server_tokens::get_aidaptiv_mtmd_info() const {
+std::vector<aidaptiv::mtmd_chunk_info> server_tokens::get_aidaptiv_mtmd_info(size_t max_tokens) const {
     std::vector<aidaptiv::mtmd_chunk_info> res;
     if (!has_mtmd) {
         return res;
     }
 
+    max_tokens = std::min(max_tokens, tokens.size());
     for (const auto & it : map_idx_to_media) {
+        if (it.first >= max_tokens) {
+            break;
+        }
         const auto & chunk = it.second;
         if (!chunk) {
+            continue;
+        }
+
+        const size_t n_tokens = mtmd_input_chunk_get_n_tokens(chunk.get());
+        if (it.first + n_tokens > max_tokens) {
             continue;
         }
 
@@ -462,11 +471,32 @@ std::vector<aidaptiv::mtmd_chunk_info> server_tokens::get_aidaptiv_mtmd_info() c
             }
         }
 
+        std::vector<int32_t> mrope_pos;
+        uint32_t mrope_n_pos_advance = 0;
+        if (mtmd_input_chunk_get_type(chunk.get()) == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+            const mtmd_image_tokens * image_tokens = mtmd_input_chunk_get_tokens_image(chunk.get());
+            const llama_pos n_pos = mtmd_input_chunk_get_n_pos(chunk.get());
+            if (image_tokens != nullptr && n_pos != (llama_pos) n_tokens) {
+                const llama_pos pos_0 = pos_next((int64_t) it.first);
+                std::vector<mtmd_decoder_pos> decoder_pos(n_tokens);
+                mtmd_helper_image_get_decoder_pos(image_tokens, pos_0, decoder_pos.data());
+
+                mrope_pos.resize(n_tokens * 4);
+                for (size_t i = 0; i < n_tokens; ++i) {
+                    mrope_pos[i                 ] = (int32_t) decoder_pos[i].t;
+                    mrope_pos[i + n_tokens      ] = (int32_t) decoder_pos[i].y;
+                    mrope_pos[i + n_tokens * 2  ] = (int32_t) decoder_pos[i].x;
+                    mrope_pos[i + n_tokens * 3  ] = (int32_t) decoder_pos[i].z;
+                }
+                mrope_n_pos_advance = (uint32_t) n_pos;
+            }
+        }
+
         res.push_back(aidaptiv::mtmd_chunk_info{
             hash,
-            mtmd_input_chunk_get_n_tokens(chunk.get()),
-            {},
-            0
+            n_tokens,
+            std::move(mrope_pos),
+            mrope_n_pos_advance
         });
     }
 

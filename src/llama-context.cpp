@@ -3990,14 +3990,14 @@ void llama_memory_kv_read(llama_memory_t mem, void *ptr, const size_t node_strid
     if (!mem || count == 0 || comp_mask == 0) {
         return;
     }
-    mem->kv_cache_read(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, comp_mask);
+    mem->kv_cache_read(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, comp_mask, mrope_pos);
 }
 
 void llama_memory_kv_write(llama_memory_t mem, void *ptr, const size_t node_stride, const uint32_t node_size, const llama_seq_id seq_id, const llama_pos start_pos, const size_t count, bool is_last_node, uint32_t comp_mask,  const llama_pos * mrope_pos) {
     if (!mem || count == 0 || comp_mask == 0) {
         return;
     }
-    mem->kv_cache_write(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, comp_mask);
+    mem->kv_cache_write(ptr, node_stride, node_size, seq_id, start_pos, count, is_last_node, comp_mask, mrope_pos);
 }
 
 float llama_moe_get_single_token_vram_hit_rate(struct llama_context * ctx) {
