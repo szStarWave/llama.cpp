@@ -570,6 +570,7 @@ struct common_params {
     int32_t     aidaptiv_dram_kv_offload_gb     = 0;
     int32_t     aidaptiv_kv_cache_resume_policy = 0;
     std::string aidaptiv_debug_log_path;
+    bool        aidaptiv_dry_run                 = false;
 
     bool single_turn       = false; // single turn chat conversation
 

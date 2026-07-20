@@ -5,6 +5,7 @@
 #include "server-tools.h"
 
 #include "arg.h"
+#include "aidaptiv.hpp"
 #include "build-info.h"
 #include "common.h"
 #include "fit.h"
@@ -84,6 +85,23 @@ int llama_server(int argc, char ** argv) {
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
+    }
+
+    if (params.aidaptiv_dry_run) {
+        try {
+            std::string debug_log_path = params.aidaptiv_debug_log_path;
+            aidaptiv::setup_params sp;
+            sp.ssd_kv_offload_gb      = params.aidaptiv_ssd_kv_offload_gb;
+            sp.dram_kv_offload_gb     = params.aidaptiv_dram_kv_offload_gb;
+            sp.kv_cache_resume_policy = static_cast<uint32_t>(params.aidaptiv_kv_cache_resume_policy);
+            sp.dry_run                = true;
+            aidaptiv::Aidaptiv runtime("", debug_log_path, sp);
+            fprintf(stdout, "Environment check successful\n");
+            return 0;
+        } catch (const std::exception & e) {
+            fprintf(stderr, "Environment check failed: %s\n", e.what());
+            return 1;
+        }
     }
 
     llama_backend_init();

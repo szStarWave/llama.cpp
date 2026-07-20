@@ -2101,6 +2101,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_DEBUG_LOG_PATH"));
     add_opt(common_arg(
+        {"--dry-run"},
+        "check the Phison aiDAPTIV environment and exit",
+        [](common_params & params) {
+            params.aidaptiv_dry_run = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-ctk", "--cache-type-k"}, "TYPE",
         string_format(
             "KV cache data type for K\n"
