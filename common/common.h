@@ -585,6 +585,17 @@ struct common_params {
     bool no_extra_bufts    = false; // disable extra buffer types (used for weight repacking)
     bool no_host           = false; // bypass host buffer allowing extra buffers to be used
 
+    std::string aidaptiv_offload_folder;
+    uint64_t    aidaptiv_temp_uuid              = 0;
+    int32_t     aidaptiv_vram_experts_cached_gb = 0;
+    int32_t     aidaptiv_dram_experts_cached_gb = 0;
+    int32_t     aidaptiv_shared_buffer_layers   = 0;
+    int32_t     aidaptiv_ssd_kv_offload_gb      = 0;
+    int32_t     aidaptiv_dram_kv_offload_gb     = 0;
+    int32_t     aidaptiv_kv_cache_resume_policy = 0;
+    std::string aidaptiv_debug_log_path;
+    bool        aidaptiv_dry_run                 = false;
+
     bool single_turn       = false; // single turn chat conversation
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
