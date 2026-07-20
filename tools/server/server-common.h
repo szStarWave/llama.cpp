@@ -199,6 +199,7 @@ public:
     const llama_tokens & get_all_tokens() const;
 
     llama_tokens get_text_tokens() const;
+    size_t aidaptiv_mtmd_cache_limit() const;
     std::vector<aidaptiv::mtmd_chunk_info> get_aidaptiv_mtmd_info(size_t n_tokens = (size_t) -1) const;
     size_t valid_keep_first(size_t n) const;
 
