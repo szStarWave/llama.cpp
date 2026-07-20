@@ -440,6 +440,21 @@ llama_tokens server_tokens::get_text_tokens() const {
     return res;
 }
 
+size_t server_tokens::aidaptiv_mtmd_cache_limit() const {
+    if (!has_mtmd) {
+        return (size_t) -1;
+    }
+
+    size_t n_media = 0;
+    for (const auto & it : map_idx_to_media) {
+        if (++n_media == 2) {
+            return it.first;
+        }
+    }
+
+    return (size_t) -1;
+}
+
 std::vector<aidaptiv::mtmd_chunk_info> server_tokens::get_aidaptiv_mtmd_info(size_t max_tokens) const {
     std::vector<aidaptiv::mtmd_chunk_info> res;
     if (!has_mtmd) {

@@ -739,6 +739,7 @@ private:
     common_speculative_ptr spec;
 
     bool add_bos_token = true;
+    bool aidaptiv_limit_multi_mtmd_prefix = false;
 
     int32_t n_ctx; // total context for all clients / slots
 
@@ -862,12 +863,20 @@ private:
             SRV_DBG("phison_restore_slot skip: slot=%d all_tokens=%zu\n", slot.id, all_tokens.size());
             return n_past;
         }
-
+        const size_t mtmd_cache_limit = aidaptiv_limit_multi_mtmd_prefix
+            ? input_tokens.aidaptiv_mtmd_cache_limit()
+            : (size_t) -1;
+        const size_t lookup_limit = std::min(all_tokens.size() - 1, mtmd_cache_limit);
+        if (aidaptiv_limit_multi_mtmd_prefix && (size_t) hit_in_device >= lookup_limit) {
+            SRV_DBG("phison_restore_slot skip: slot=%d hit_in_device=%u lookup_limit=%zu\n",
+                    slot.id, hit_in_device, lookup_limit);
+            return n_past;
+        }
         // Align the tokens passed to restore_kv_cache to the node size.
         // For recurrent/hybrid models, the restore API requires the token count
         // to be a multiple of the node size. For standard attention/ISWA models,
         // only complete nodes are used; trailing unaligned tokens are discarded.
-        const size_t lookup_tokens = all_tokens.size() - 1;
+        const size_t lookup_tokens = lookup_limit;
         const size_t aligned_raw = lookup_tokens - (lookup_tokens % restore_node_size);
         const size_t aligned_tokens = input_tokens.valid_keep_first(aligned_raw);
         if (aligned_tokens < 2) {
@@ -890,7 +899,8 @@ private:
         auto stats = adptv->restore_kv_cache(restore_tokens, mtmd_info, loras, slot.id, hit_in_device);
 
         uint32_t n_reuse = stats.dram_reuse_token_cnt + stats.ssd_reuse_token_cnt;
-        size_t n_new = std::min<size_t>(all_tokens.size() - 1, (size_t) hit_in_device + n_reuse);
+        const size_t restore_cap = aidaptiv_limit_multi_mtmd_prefix ? aligned_tokens : all_tokens.size() - 1;
+        size_t n_new = std::min<size_t>(restore_cap, (size_t) hit_in_device + n_reuse);
         n_new = input_tokens.valid_keep_first(n_new);
         if (n_new > 0) {
             slot.phison_kv_saved = true;
@@ -978,6 +988,9 @@ private:
 
         const auto loras = phison_active_loras(slot);
         size_t save_tokens = std::min(all_tokens.size(), max_tokens);
+        if (aidaptiv_limit_multi_mtmd_prefix) {
+            save_tokens = std::min(save_tokens, slot.task->tokens.aidaptiv_mtmd_cache_limit());
+        }
 
         // Align token count to node size. Both save and restore operate on complete nodes.
         const size_t aligned_tokens = save_tokens - (save_tokens % node_size);
@@ -1123,6 +1136,17 @@ private:
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();
+
+        char model_arch[64] = {};
+        aidaptiv_limit_multi_mtmd_prefix = false;
+        if (llama_model_meta_val_str(model_tgt, "general.architecture", model_arch, sizeof(model_arch)) > 0) {
+            // Temporary workaround until aiDAPTIV can restore multiple Qwen3.5 MTMD chunks safely.
+            aidaptiv_limit_multi_mtmd_prefix = std::string(model_arch) == "qwen35" ||
+                                               std::string(model_arch) == "qwen35moe";
+        }
+        SRV_INF("aiDAPTIV multi-MTMD prefix limit: %s, arch = %s\n",
+                aidaptiv_limit_multi_mtmd_prefix ? "enabled" : "disabled",
+                model_arch[0] != '\0' ? model_arch : "unknown");
 
         // Initialize aiDAPTIV runtime after context is created
         if (aidaptiv_runtime && ctx_tgt) {
