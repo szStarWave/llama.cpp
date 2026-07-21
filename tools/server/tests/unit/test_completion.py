@@ -235,6 +235,53 @@ def test_nocache_long_input_prompt():
     })
     assert res.status_code == 400
 
+
+@pytest.mark.parametrize("cache_id", [
+    "doc-v1-" + "a" * 64,
+    "thread-v1-" + "0" * 64,
+])
+def test_aidaptiv_cache_id_valid(cache_id: str):
+    global server
+    server.aidaptiv_cache_prefix = "test-app-"
+    server.start()
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "n_predict": 1,
+        "aidaptiv_cache_id": cache_id,
+    })
+    assert res.status_code == 200
+
+
+def test_aidaptiv_cache_id_requires_server_prefix():
+    global server
+    server.start()
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "n_predict": 1,
+        "aidaptiv_cache_id": "doc-v1-" + "a" * 64,
+    })
+    assert res.status_code == 400
+    assert "--aidaptiv-cache-prefix" in res.body["error"]["message"]
+
+
+@pytest.mark.parametrize("cache_id", [
+    "doc-v1-short",
+    "doc-v1-" + "A" * 64,
+    "thread-v1-" + "g" * 64,
+    "../doc-v1-" + "a" * 64,
+    "doc-v1-" + "a" * 63 + "\u4e2d",
+])
+def test_aidaptiv_cache_id_invalid(cache_id: str):
+    global server
+    server.start()
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "I believe the meaning of life is",
+        "n_predict": 1,
+        "aidaptiv_cache_id": cache_id,
+    })
+    assert res.status_code == 400
+    assert "aidaptiv_cache_id" in res.body["error"]["message"]
+
 def test_json_prompt_no_mtmd():
     global server
     server.start()

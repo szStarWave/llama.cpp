@@ -12,6 +12,31 @@
 
 using json = nlohmann::ordered_json;
 
+bool server_is_valid_aidaptiv_cache_id(const std::string & value) {
+    static const std::string doc_prefix    = "doc-v1-";
+    static const std::string thread_prefix = "thread-v1-";
+
+    size_t prefix_size = 0;
+    if (value.rfind(doc_prefix, 0) == 0) {
+        prefix_size = doc_prefix.size();
+    } else if (value.rfind(thread_prefix, 0) == 0) {
+        prefix_size = thread_prefix.size();
+    } else {
+        return false;
+    }
+
+    if (value.size() != prefix_size + 64) {
+        return false;
+    }
+    for (size_t i = prefix_size; i < value.size(); ++i) {
+        const char c = value[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 //
 // task_params
 //
@@ -262,6 +287,10 @@ task_params server_task::params_from_json_cmpl(
     auto stream_opt         = json_value(data,       "stream_options",     json::object());
     params.include_usage    = json_value(stream_opt, "include_usage",      false);
     params.cache_prompt     = json_value(data,       "cache_prompt",       defaults.cache_prompt);
+    params.aidaptiv_cache_id = json_value(data,      "aidaptiv_cache_id",  std::string());
+    if (!params.aidaptiv_cache_id.empty() && !server_is_valid_aidaptiv_cache_id(params.aidaptiv_cache_id)) {
+        throw std::invalid_argument("aidaptiv_cache_id must be doc-v1-<64 lowercase hex> or thread-v1-<64 lowercase hex>");
+    }
     params.return_tokens    = json_value(data,       "return_tokens",      false);
     params.return_progress  = json_value(data,       "return_progress",    false);
     auto max_tokens         = json_value(data,       "max_tokens",         defaults.n_predict);

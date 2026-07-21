@@ -110,6 +110,7 @@ class ServerProcess:
     webui_mcp_proxy: bool = False
     backend_sampling: bool = False
     gcp_compat: bool = False
+    aidaptiv_cache_prefix: str | None = None
 
     # session variables
     process: subprocess.Popen | None = None
@@ -255,6 +256,8 @@ class ServerProcess:
             server_args.append("--webui-mcp-proxy")
         if self.backend_sampling:
             server_args.append("--backend_sampling")
+        if self.aidaptiv_cache_prefix:
+            server_args.extend(["--aidaptiv-cache-prefix", self.aidaptiv_cache_prefix])
         if self.gcp_compat:
             env["AIP_MODE"] = "PREDICTION"
 

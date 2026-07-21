@@ -515,6 +515,10 @@ These words will not be included in the completion, so make sure to add them to 
 
 `cache_prompt`: Re-use KV cache from a previous request if possible. This way the common prefix does not have to be re-processed, only the suffix that differs between the requests. Because (depending on the backend) the logits are **not** guaranteed to be bit-for-bit identical for different batch sizes (prompt processing vs. token generation) enabling this option can cause nondeterministic results. Default: `true`
 
+`aidaptiv_cache_id`: Isolate aiDAPTIV KV saves in an application-managed subfolder while retaining longest-prefix restore. Accepted values are `doc-v1-<64 lowercase hex>` and `thread-v1-<64 lowercase hex>`. The server treats the value as an opaque identity and never as a filesystem path. A managed subfolder is locked while requests reference it and unlocked when its reference count reaches zero; a later request locks it again before restore. The server also clears stale managed locks at startup and clears a reused slot's in-memory KV when its cache identity changes. This field has no effect when aiDAPTIV KV caching is disabled. Default: unset.
+
+`--aidaptiv-cache-prefix PREFIX`: Configure the application-owned subfolder prefix required by `aidaptiv_cache_id`. The prefix must contain 2-48 lowercase ASCII letters, digits, or hyphens, may not start with a hyphen, and must end with a hyphen. When unset, the server reports `capabilities.aidaptiv_cache_subfolder=false` and rejects requests containing `aidaptiv_cache_id`.
+
 `return_tokens`: Return the raw generated token ids in the `tokens` field. Otherwise `tokens` remains empty. Default: `false`
 
 `samplers`: The order the samplers should be applied in. An array of strings representing sampler type names. If a sampler is not set, it will not be used. If a sampler is specified more than once, it will be applied multiple times. Default: `["dry", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"]` - these are all the available values.
@@ -838,6 +842,9 @@ By default, it is read-only. To make POST request to change global properties, y
   },
   "media_marker": "<__media_YoNhud46VdDqbuFmKYEO9PY7A4ARzRfg__>",
   "build_info": "b(build number)-(build commit hash)",
+  "capabilities": {
+    "aidaptiv_cache_subfolder": true
+  },
   "is_sleeping": false
 }
 ```
@@ -848,6 +855,7 @@ By default, it is read-only. To make POST request to change global properties, y
 - `chat_template` - the model's original Jinja2 prompt template
 - `chat_template_caps` - capabilities of the chat template (see `common/jinja/caps.h` for more info)
 - `modalities` - the list of supported modalities
+- `capabilities.aidaptiv_cache_subfolder` - whether completion requests support isolated aiDAPTIV cache identities
 - `is_sleeping` - sleeping status, see [Sleeping on idle](#sleeping-on-idle)
 
 ### POST `/props`: Change server global properties.

@@ -13,6 +13,10 @@
 
 using json = nlohmann::ordered_json;
 
+// Shared by request parsing and aiDAPTIV subfolder ownership checks. Keep all
+// accepted cache identity schemas in this validator.
+bool server_is_valid_aidaptiv_cache_id(const std::string & value);
+
 enum server_task_type {
     SERVER_TASK_TYPE_COMPLETION,
     SERVER_TASK_TYPE_EMBEDDING,
@@ -53,6 +57,9 @@ struct task_params {
     bool cache_prompt    = true; // remember the prompt to avoid reprocessing all prompt
     bool return_tokens   = false;
     bool return_progress = false;
+
+    // Stable application-provided identity for an isolated aiDAPTIV KV cache.
+    std::string aidaptiv_cache_id;
 
     int32_t n_keep    =  0; // number of tokens to keep from initial prompt
     int32_t n_discard =  0; // number of tokens after n_keep that may be discarded when shifting context, 0 defaults to half
