@@ -29,6 +29,14 @@ def test_server_props():
     assert server.n_ctx is not None and server.n_slots is not None
     assert default_val["n_ctx"] == server.n_ctx / server.n_slots
     assert default_val["params"]["seed"] == server.seed
+    assert res.body["capabilities"]["aidaptiv_cache_subfolder"] is False
+
+    server.stop()
+    server.aidaptiv_cache_prefix = "test-app-"
+    server.start()
+    res = server.make_request("GET", "/props")
+    assert res.status_code == 200
+    assert res.body["capabilities"]["aidaptiv_cache_subfolder"] is True
 
 
 def test_server_models():

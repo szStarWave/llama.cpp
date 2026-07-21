@@ -116,6 +116,7 @@ class ServerProcess:
     gcp_compat: bool = False
     server_tools: str | None = None
     cors_origins: str | None = None
+    aidaptiv_cache_prefix: str | None = None
 
     # session variables
     process: subprocess.Popen | None = None
@@ -267,6 +268,8 @@ class ServerProcess:
             server_args.extend(["--tools", self.server_tools])
         if self.backend_sampling:
             server_args.append("--backend_sampling")
+        if self.aidaptiv_cache_prefix:
+            server_args.extend(["--aidaptiv-cache-prefix", self.aidaptiv_cache_prefix])
         if self.gcp_compat:
             env["AIP_MODE"] = "PREDICTION"
 

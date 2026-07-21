@@ -171,6 +171,7 @@ struct server_slot {
     uint64_t phison_kv_saved_hash = 0;
     size_t phison_kv_flushed_tokens = 0;
     uint64_t phison_kv_flushed_hash = 0;
+    std::string phison_cache_subfolder;
 
     void prompt_save(server_prompt_cache & prompt_cache) const {
         GGML_ASSERT(prompt.data.size() == 0);
@@ -771,6 +772,7 @@ private:
     bool sleeping = false;
 
     std::unique_ptr<aidaptiv::Aidaptiv> aidaptiv_runtime;
+    std::unordered_map<std::string, size_t> phison_cache_folder_refs;
 
     void destroy() {
         if (aidaptiv_runtime) {
@@ -824,6 +826,121 @@ private:
     size_t phison_node_size() const {
         const bool is_recurrent_or_hybrid = model_tgt && (llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt));
         return is_recurrent_or_hybrid ? 128u : 8u;
+    }
+
+    std::string phison_cache_subfolder(const std::string & cache_id) const {
+        if (cache_id.empty()) {
+            return {};
+        }
+        GGML_ASSERT(server_is_valid_aidaptiv_cache_id(cache_id));
+        GGML_ASSERT(!params_base.aidaptiv_cache_prefix.empty());
+        return params_base.aidaptiv_cache_prefix + cache_id;
+    }
+
+    static std::string phison_cache_log_id(const std::string & subfolder) {
+        const size_t digest_pos = subfolder.rfind('-');
+        if (digest_pos == std::string::npos || digest_pos + 1 >= subfolder.size()) {
+            return "invalid";
+        }
+        return subfolder.substr(0, digest_pos + 1) + subfolder.substr(digest_pos + 1, 12);
+    }
+
+    bool phison_is_managed_cache_folder(const std::string & subfolder) const {
+        const std::string & prefix = params_base.aidaptiv_cache_prefix;
+        if (prefix.empty() || subfolder.rfind(prefix, 0) != 0) {
+            return false;
+        }
+        return server_is_valid_aidaptiv_cache_id(subfolder.substr(prefix.size()));
+    }
+
+    bool phison_set_cache_folder_lock(const std::string & subfolder, bool locked) {
+        auto * adptv = aidaptiv();
+        if (adptv == nullptr || subfolder.empty()) {
+            return false;
+        }
+        try {
+            const auto folders = adptv->get_lock_folder_map();
+            const auto folder = folders.find(subfolder);
+            if (folder == folders.end()) {
+                return false;
+            }
+            const bool state_matches =
+                (locked && folder->second == "lock") || (!locked && folder->second == "unlock");
+            if (state_matches) {
+                SRV_INF("aiDAPTIV cache folder lock unchanged: cache=%s lock=%d\n",
+                        phison_cache_log_id(subfolder).c_str(), locked ? 1 : 0);
+                return true;
+            }
+            const std::string err = adptv->update_lock_folders({ { subfolder, locked } });
+            if (!err.empty()) {
+                SRV_WRN("aiDAPTIV cache folder lock update failed: cache=%s lock=%d error=%s\n",
+                        phison_cache_log_id(subfolder).c_str(), locked ? 1 : 0, err.c_str());
+                return false;
+            }
+            SRV_INF("aiDAPTIV cache folder lock updated: cache=%s lock=%d\n",
+                    phison_cache_log_id(subfolder).c_str(), locked ? 1 : 0);
+            return true;
+        } catch (const std::exception & e) {
+            SRV_WRN("aiDAPTIV cache folder lock update failed: cache=%s lock=%d error=%s\n",
+                    phison_cache_log_id(subfolder).c_str(), locked ? 1 : 0, e.what());
+            return false;
+        }
+    }
+
+    void phison_acquire_cache_folder(server_slot & slot, const std::string & cache_id) {
+        const std::string subfolder = phison_cache_subfolder(cache_id);
+        if (!aidaptiv_kv_enabled() || subfolder.empty()) {
+            return;
+        }
+
+        slot.phison_cache_subfolder = subfolder;
+        size_t & refs = phison_cache_folder_refs[subfolder];
+        refs++;
+        if (refs == 1) {
+            phison_set_cache_folder_lock(subfolder, true);
+        }
+        SRV_INF("acquired aiDAPTIV cache folder: cache=%s refs=%zu\n", phison_cache_log_id(subfolder).c_str(), refs);
+    }
+
+    void phison_unlock_stale_cache_folders() {
+        auto * adptv = aidaptiv();
+        if (adptv == nullptr) {
+            return;
+        }
+
+        try {
+            const auto folders = adptv->get_lock_folder_map();
+            for (const auto & folder : folders) {
+                if (phison_is_managed_cache_folder(folder.first) && folder.second == "lock") {
+                    phison_set_cache_folder_lock(folder.first, false);
+                }
+            }
+        } catch (const std::exception & e) {
+            SRV_WRN("failed to clear stale aiDAPTIV managed locks: %s\n", e.what());
+        }
+    }
+
+    void phison_release_cache_folder(server_slot & slot) {
+        const std::string subfolder = std::move(slot.phison_cache_subfolder);
+        slot.phison_cache_subfolder.clear();
+        if (subfolder.empty()) {
+            return;
+        }
+
+        auto it = phison_cache_folder_refs.find(subfolder);
+        if (it == phison_cache_folder_refs.end()) {
+            return;
+        }
+        if (it->second > 1) {
+            it->second--;
+            SRV_INF("released aiDAPTIV cache folder: cache=%s refs=%zu\n", phison_cache_log_id(subfolder).c_str(), it->second);
+            return;
+        }
+
+        phison_cache_folder_refs.erase(it);
+        const bool unlocked = phison_set_cache_folder_lock(subfolder, false);
+        SRV_INF("released aiDAPTIV cache folder: cache=%s refs=0 lock=%s\n",
+                phison_cache_log_id(subfolder).c_str(), unlocked ? "released" : "unchanged");
     }
 
     std::vector<aidaptiv::lora_info> phison_active_loras(const server_slot & slot) const {
@@ -1028,11 +1145,15 @@ private:
                 llama_tokens(all_tokens.begin(), all_tokens.begin() + (ptrdiff_t) save_tokens),
                 mtmd_info,
                 loras,
-                slot.id);
+                slot.id,
+                slot.phison_cache_subfolder);
         if (flush) {
             adptv->flush_kv_cache();
             slot.phison_kv_flushed_tokens = save_tokens;
             slot.phison_kv_flushed_hash = save_hash;
+            if (!slot.phison_cache_subfolder.empty()) {
+                phison_set_cache_folder_lock(slot.phison_cache_subfolder, true);
+            }
         }
         slot.phison_kv_saved = true;
         slot.phison_kv_saved_tokens = save_tokens;
@@ -1153,6 +1274,7 @@ private:
             std::vector<llama_adapter_lora *> lora_init;
             std::vector<aidaptiv::lora_info>  lora_adapters;
             aidaptiv_runtime->init(ctx_tgt, model_tgt, lora_init, lora_adapters);
+            phison_unlock_stale_cache_folders();
         }
 
         vocab = llama_model_get_vocab(model_tgt);
@@ -1342,6 +1464,7 @@ private:
             SLT_INF(slot, "new slot, n_ctx = %d\n", slot.n_ctx);
 
             slot.callback_on_release = [this](int id_slot) {
+                phison_release_cache_folder(slots[id_slot]);
                 queue_tasks.pop_deferred_task(id_slot);
             };
 
@@ -1772,7 +1895,23 @@ private:
             slot.smpl.reset();
         }
 
+        const std::string & next_cache_id = task.params.aidaptiv_cache_id;
+        if (!next_cache_id.empty() && params_base.aidaptiv_cache_prefix.empty()) {
+            send_error(task, "aidaptiv_cache_id requires --aidaptiv-cache-prefix", ERROR_TYPE_INVALID_REQUEST);
+            return false;
+        }
+        if (slot.task_prev) {
+            const std::string & previous_cache_id = slot.task_prev->params.aidaptiv_cache_id;
+            if (previous_cache_id != next_cache_id && (!previous_cache_id.empty() || !next_cache_id.empty())) {
+                SLT_INF(slot, "aiDAPTIV cache identity changed, clearing in-memory slot context: previous=%s next=%s\n",
+                        previous_cache_id.empty() ? "default" : phison_cache_log_id(phison_cache_subfolder(previous_cache_id)).c_str(),
+                        next_cache_id.empty() ? "default" : phison_cache_log_id(phison_cache_subfolder(next_cache_id)).c_str());
+                slot.prompt_clear(false);
+            }
+        }
+
         slot.task = std::make_unique<const server_task>(std::move(task));
+        phison_acquire_cache_folder(slot, slot.task->params.aidaptiv_cache_id);
 
         slot.state = slot.task->is_child()
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
@@ -3649,7 +3788,10 @@ private:
                 if (slot.state == SLOT_STATE_DONE_PROMPT && decoded_prefix >= (size_t) slot.task->n_tokens()) {
                     phison_save_slot(slot, final_storable_prefix, "prompt", true);
                 } else if (final_storable_prefix > 0 && decoded_prefix >= final_storable_prefix && final_storable_prefix > slot.phison_kv_saved_tokens) {
-                    phison_save_slot(slot, final_storable_prefix, "prefill", false);
+                    // Do not leave a pending aiDAPTIV write for the cancellation path.
+                    // Hybrid models can reject save/flush calls after inference has
+                    // already been interrupted, leaving an incomplete cache folder.
+                    phison_save_slot(slot, final_storable_prefix, "prefill", true);
                 }
             }
 
@@ -4482,6 +4624,9 @@ void server_routes::init_routes() {
             { "eos_token",                   meta->eos_token_str },
             { "build_info",                  meta->build_info },
             { "is_sleeping",                 queue_tasks.is_sleeping() },
+            { "capabilities",                json {
+                { "aidaptiv_cache_subfolder", !params.aidaptiv_cache_prefix.empty() },
+            } },
         };
         if (params.use_jinja) {
             if (!tmpl_tools.empty()) {

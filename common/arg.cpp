@@ -2251,6 +2251,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_KV_CACHE_RESUME_POLICY"));
     add_opt(common_arg(
+        {"--aidaptiv-cache-prefix"}, "PREFIX",
+        "application-owned aiDAPTIV cache subfolder prefix (lowercase ASCII, digits and hyphens; must end with '-')",
+        [](common_params & params, const std::string & value) {
+            if (value.size() < 2 || value.size() > 48 || value.front() == '-' || value.back() != '-') {
+                throw std::invalid_argument("invalid aiDAPTIV cache prefix");
+            }
+            for (const char c : value) {
+                if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) {
+                    throw std::invalid_argument("invalid aiDAPTIV cache prefix");
+                }
+            }
+            params.aidaptiv_cache_prefix = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PHISON_CACHE_PREFIX"));
+    add_opt(common_arg(
         {"--vram-experts-cached-gb"}, "N",
         "Phison aiDAPTIV VRAM expert cache budget in GiB",
         [](common_params & params, int value) {
