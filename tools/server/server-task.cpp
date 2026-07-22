@@ -291,6 +291,7 @@ task_params server_task::params_from_json_cmpl(
     if (!params.aidaptiv_cache_id.empty() && !server_is_valid_aidaptiv_cache_id(params.aidaptiv_cache_id)) {
         throw std::invalid_argument("aidaptiv_cache_id must be doc-v1-<64 lowercase hex> or thread-v1-<64 lowercase hex>");
     }
+    params.aidaptiv_cache_build_only = json_value(data, "aidaptiv_cache_build_only", false);
     params.return_tokens    = json_value(data,       "return_tokens",      false);
     params.return_progress  = json_value(data,       "return_progress",    false);
     auto max_tokens         = json_value(data,       "max_tokens",         defaults.n_predict);
@@ -2037,6 +2038,9 @@ size_t server_prompt_cache::n_tokens() const {
 server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
     // first check if the current state is contained fully in the cache
     for (auto it = states.begin(); it != states.end(); ++it) {
+        if (it->aidaptiv_cache_id != prompt.aidaptiv_cache_id) {
+            continue;
+        }
         const int cur_lcp_len = it->tokens.get_common_prefix(prompt.tokens);
 
         if (cur_lcp_len == (int) prompt.tokens.size()) {
@@ -2047,6 +2051,10 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
 
     // next, remove any cached prompts that are fully contained in the current prompt
     for (auto it = states.begin(); it != states.end();) {
+        if (it->aidaptiv_cache_id != prompt.aidaptiv_cache_id) {
+            ++it;
+            continue;
+        }
         const int len = it->tokens.get_common_prefix(prompt.tokens);
 
         if (len == (int) it->tokens.size()) {
@@ -2079,6 +2087,7 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
 
     states.push_back({
         /*.tokens      =*/ prompt.tokens.clone(),
+        /*.aidaptiv_cache_id =*/ prompt.aidaptiv_cache_id,
         /*.data        =*/ {
             /*.main =*/ std::move(state_data_tgt),
             /*.drft =*/ std::move(state_data_dft),
@@ -2089,11 +2098,13 @@ server_prompt * server_prompt_cache::alloc(const server_prompt & prompt, size_t 
     return &states.back();
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
-    const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
+bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, const std::string & aidaptiv_cache_id,
+                               llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
+    const bool same_identity = prompt.aidaptiv_cache_id == aidaptiv_cache_id;
+    const int lcp_best = same_identity ? prompt.tokens.get_common_prefix(tokens_new) : 0;
 
-    float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
-    float sim_best    = float(lcp_best) / tokens_new.size();
+    float f_keep_best = same_identity && prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
+    float sim_best    = same_identity && !tokens_new.empty() ? float(lcp_best) / tokens_new.size() : -1.0f;
 
     SRV_INF(" - looking for better prompt, base f_keep = %.3f, sim = %.3f\n", f_keep_best, sim_best);
 
@@ -2101,6 +2112,9 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 
     // find the most similar cached prompt, that would also preserve the most context
     for (auto it = states.begin(); it != states.end(); ++it) {
+        if (it->aidaptiv_cache_id != aidaptiv_cache_id) {
+            continue;
+        }
         const int lcp_cur = it->tokens.get_common_prefix(tokens_new);
 
         const float f_keep_cur = float(lcp_cur) / it->tokens.size();

@@ -61,6 +61,11 @@ struct task_params {
     // Stable application-provided identity for an isolated aiDAPTIV KV cache.
     std::string aidaptiv_cache_id;
 
+    // Token boundary of the canonical document prefix. This is derived by the
+    // server from leading messages using the active chat template/tokenizer.
+    size_t aidaptiv_cache_prefix_tokens = 0;
+    bool aidaptiv_cache_build_only = false;
+
     int32_t n_keep    =  0; // number of tokens to keep from initial prompt
     int32_t n_discard =  0; // number of tokens after n_keep that may be discarded when shifting context, 0 defaults to half
     int32_t n_predict = -1; // new tokens to predict
@@ -602,6 +607,8 @@ struct server_prompt_data {
 
 struct server_prompt {
     server_tokens tokens;
+    // Empty means the legacy global prompt cache used by ordinary requests.
+    std::string aidaptiv_cache_id;
 
     server_prompt_data data;
 
@@ -626,6 +633,7 @@ struct server_prompt {
     server_prompt clone() const {
         return server_prompt {
             tokens.clone(),
+            aidaptiv_cache_id,
             data,
             checkpoints,
         };
@@ -652,7 +660,8 @@ struct server_prompt_cache {
 
     server_prompt * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
 
-    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_main, llama_context * ctx_drft, int32_t id_slot);
+    bool load(server_prompt & prompt, const server_tokens & tokens_new, const std::string & aidaptiv_cache_id,
+              llama_context * ctx_main, llama_context * ctx_drft, int32_t id_slot);
 
     void update();
 };
