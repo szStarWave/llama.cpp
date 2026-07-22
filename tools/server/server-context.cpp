@@ -172,6 +172,7 @@ struct server_slot {
     size_t phison_kv_flushed_tokens = 0;
     uint64_t phison_kv_flushed_hash = 0;
     std::string phison_cache_subfolder;
+    bool phison_cache_folder_existed = false;
 
     void prompt_save(server_prompt_cache & prompt_cache) const {
         GGML_ASSERT(prompt.data.size() == 0);
@@ -195,8 +196,8 @@ struct server_slot {
         }
     }
 
-    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
-        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id);
+    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens, const std::string & aidaptiv_cache_id) {
+        bool res = prompt_cache.load(prompt, tokens, aidaptiv_cache_id, ctx_tgt, ctx_dft, id);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
         }
@@ -217,6 +218,7 @@ struct server_slot {
         }
 
         prompt.tokens.clear();
+        prompt.aidaptiv_cache_id.clear();
         phison_kv_saved = false;
         phison_kv_saved_tokens = 0;
         phison_kv_saved_hash = 0;
@@ -452,13 +454,13 @@ struct server_slot {
 
         timings.prompt_n            = n_prompt_tokens_processed;
         timings.prompt_ms           = t_prompt_processing;
-        timings.prompt_per_token_ms = t_prompt_processing / n_prompt_tokens_processed;
-        timings.prompt_per_second   = 1e3 / t_prompt_processing * n_prompt_tokens_processed;
+        timings.prompt_per_token_ms = n_prompt_tokens_processed > 0 ? t_prompt_processing / n_prompt_tokens_processed : 0.0;
+        timings.prompt_per_second   = t_prompt_processing > 0 ? 1e3 / t_prompt_processing * n_prompt_tokens_processed : 0.0;
 
         timings.predicted_n            = n_decoded;
         timings.predicted_ms           = t_token_generation;
-        timings.predicted_per_token_ms = t_token_generation / n_decoded;
-        timings.predicted_per_second   = 1e3 / t_token_generation * n_decoded;
+        timings.predicted_per_token_ms = n_decoded > 0 ? t_token_generation / n_decoded : 0.0;
+        timings.predicted_per_second   = t_token_generation > 0 ? 1e3 / t_token_generation * n_decoded : 0.0;
 
         // Add speculative metrics
         if (n_draft_total > 0) {
@@ -531,11 +533,11 @@ struct server_slot {
     }
 
     void print_timings() const {
-        const double t_prompt        =       t_prompt_processing / n_prompt_tokens_processed;
-        const double n_prompt_second = 1e3 / t_prompt_processing * n_prompt_tokens_processed;
+        const double t_prompt        = n_prompt_tokens_processed > 0 ? t_prompt_processing / n_prompt_tokens_processed : 0.0;
+        const double n_prompt_second = t_prompt_processing > 0 ? 1e3 / t_prompt_processing * n_prompt_tokens_processed : 0.0;
 
-        const double t_gen        =       t_token_generation / n_decoded;
-        const double n_gen_second = 1e3 / t_token_generation * n_decoded;
+        const double t_gen        = n_decoded > 0 ? t_token_generation / n_decoded : 0.0;
+        const double n_gen_second = t_token_generation > 0 ? 1e3 / t_token_generation * n_decoded : 0.0;
 
         SLT_INF(*this,
                 "\n"
@@ -895,11 +897,23 @@ private:
 
         slot.phison_cache_subfolder = subfolder;
         size_t & refs = phison_cache_folder_refs[subfolder];
+        bool folder_exists = refs > 0;
+        if (!folder_exists) {
+            try {
+                const auto folders = aidaptiv()->get_lock_folder_map();
+                folder_exists = folders.find(subfolder) != folders.end();
+            } catch (const std::exception & e) {
+                SRV_WRN("failed to inspect aiDAPTIV cache folder before acquire: cache=%s error=%s\n",
+                        phison_cache_log_id(subfolder).c_str(), e.what());
+            }
+        }
+        slot.phison_cache_folder_existed = folder_exists;
         refs++;
         if (refs == 1) {
             phison_set_cache_folder_lock(subfolder, true);
         }
-        SRV_INF("acquired aiDAPTIV cache folder: cache=%s refs=%zu\n", phison_cache_log_id(subfolder).c_str(), refs);
+        SRV_INF("acquired aiDAPTIV cache folder: cache=%s refs=%zu existing=%d\n",
+                phison_cache_log_id(subfolder).c_str(), refs, folder_exists ? 1 : 0);
     }
 
     void phison_unlock_stale_cache_folders() {
@@ -923,6 +937,7 @@ private:
     void phison_release_cache_folder(server_slot & slot) {
         const std::string subfolder = std::move(slot.phison_cache_subfolder);
         slot.phison_cache_subfolder.clear();
+        slot.phison_cache_folder_existed = false;
         if (subfolder.empty()) {
             return;
         }
@@ -967,7 +982,7 @@ private:
         const bool is_recurrent_or_hybrid = model_tgt && (llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt));
         const size_t restore_node_size = phison_node_size();
 
-        const uint32_t  hit_in_device     = (uint32_t) std::max(0, n_past);
+        uint32_t hit_in_device = (uint32_t) std::max(0, n_past);
         SRV_DBG("phison_restore_slot enter: slot=%d adptv=%p enabled=%d task_type=%d n_past=%d hit_in_device=%u kv_pos_max_before=%d input_tokens=%zu prompt_tokens=%zu common_prefix=%zu pos_next=%d is_recurrent_or_hybrid=%d node_size=%zu\n",
                 slot.id, (void *) adptv, adptv_enabled, task_type, n_past, hit_in_device, kv_pos_max_before, input_n, prompt_n, common_n, slot.prompt.tokens.pos_next(), (int) is_recurrent_or_hybrid, restore_node_size);
         if (!aidaptiv_kv_enabled() || adptv == nullptr || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
@@ -983,8 +998,13 @@ private:
         const size_t mtmd_cache_limit = aidaptiv_limit_multi_mtmd_prefix
             ? input_tokens.aidaptiv_mtmd_cache_limit()
             : (size_t) -1;
-        const size_t lookup_limit = std::min(all_tokens.size() - 1, mtmd_cache_limit);
-        if (aidaptiv_limit_multi_mtmd_prefix && (size_t) hit_in_device >= lookup_limit) {
+        const size_t document_prefix_limit = slot.task->params.aidaptiv_cache_prefix_tokens;
+        size_t lookup_limit = std::min(all_tokens.size() - 1, mtmd_cache_limit);
+        if (document_prefix_limit > 0) {
+            lookup_limit = std::min(lookup_limit, document_prefix_limit);
+        }
+        if ((aidaptiv_limit_multi_mtmd_prefix || document_prefix_limit > 0) &&
+            (size_t) hit_in_device >= lookup_limit) {
             SRV_DBG("phison_restore_slot skip: slot=%d hit_in_device=%u lookup_limit=%zu\n",
                     slot.id, hit_in_device, lookup_limit);
             return n_past;
@@ -1016,7 +1036,40 @@ private:
         auto stats = adptv->restore_kv_cache(restore_tokens, mtmd_info, loras, slot.id, hit_in_device);
 
         uint32_t n_reuse = stats.dram_reuse_token_cnt + stats.ssd_reuse_token_cnt;
-        const size_t restore_cap = aidaptiv_limit_multi_mtmd_prefix ? aligned_tokens : all_tokens.size() - 1;
+        const bool managed_cache = slot.task && !slot.task->params.aidaptiv_cache_id.empty();
+        const bool stale_checkpoint =
+            managed_cache && hit_in_device > 0 && n_reuse == 0 && common_n > (size_t) hit_in_device + restore_node_size;
+        if (stale_checkpoint) {
+            const auto checkpoint = std::find_if(
+                slot.prompt.checkpoints.rbegin(),
+                slot.prompt.checkpoints.rend(),
+                [&](const auto & cur) { return cur.n_tokens == (int64_t) hit_in_device; });
+            if (checkpoint != slot.prompt.checkpoints.rend()) {
+                SLT_WRN(slot, "aiDAPTIV did not extend stale host checkpoint (%u of %zu common tokens); retrying cache restore from zero\n",
+                        hit_in_device, common_n);
+                common_context_seq_rm(ctx_tgt, slot.id, 0, -1);
+                if (ctx_dft) {
+                    common_context_seq_rm(ctx_dft.get(), slot.id, 0, -1);
+                }
+
+                auto retry_stats = adptv->restore_kv_cache(restore_tokens, mtmd_info, loras, slot.id, 0);
+                const uint32_t retry_reuse = retry_stats.dram_reuse_token_cnt + retry_stats.ssd_reuse_token_cnt;
+                if (retry_reuse > hit_in_device) {
+                    stats = retry_stats;
+                    n_reuse = retry_reuse;
+                    hit_in_device = 0;
+                    SLT_INF(slot, "aiDAPTIV zero-based retry improved document prefix restore to %u tokens\n", n_reuse);
+                } else {
+                    checkpoint->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    checkpoint->load_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    SLT_WRN(slot, "aiDAPTIV zero-based retry did not improve restore (%u tokens); restored host checkpoint at %u\n",
+                            retry_reuse, hit_in_device);
+                }
+            }
+        }
+        const size_t restore_cap = (aidaptiv_limit_multi_mtmd_prefix || document_prefix_limit > 0)
+            ? aligned_tokens
+            : all_tokens.size() - 1;
         size_t n_new = std::min<size_t>(restore_cap, (size_t) hit_in_device + n_reuse);
         n_new = input_tokens.valid_keep_first(n_new);
         if (n_new > 0) {
@@ -1089,6 +1142,11 @@ private:
             SRV_DBG("phison_save_slot skip: slot=%d\n", slot.id);
             return false;
         }
+        if (!slot.phison_cache_subfolder.empty() && slot.phison_cache_folder_existed) {
+            SLT_INF(slot, "aiDAPTIV document cache is immutable after its initial write; skipping save to preserve the reusable prefix: cache=%s reason=%s\n",
+                    phison_cache_log_id(slot.phison_cache_subfolder).c_str(), reason);
+            return false;
+        }
 
         const llama_tokens & all_tokens = slot.prompt.tokens.get_all_tokens();
         if (all_tokens.empty()) {
@@ -1105,6 +1163,15 @@ private:
 
         const auto loras = phison_active_loras(slot);
         size_t save_tokens = std::min(all_tokens.size(), max_tokens);
+        const size_t document_prefix_limit = slot.task->params.aidaptiv_cache_prefix_tokens;
+        if (document_prefix_limit > 0) {
+            if (all_tokens.size() < document_prefix_limit) {
+                SRV_DBG("phison_save_slot waiting for stable document prefix: slot=%d decoded=%zu boundary=%zu reason=%s\n",
+                        slot.id, all_tokens.size(), document_prefix_limit, reason);
+                return false;
+            }
+            save_tokens = std::min(save_tokens, document_prefix_limit);
+        }
         if (aidaptiv_limit_multi_mtmd_prefix) {
             save_tokens = std::min(save_tokens, slot.task->tokens.aidaptiv_mtmd_cache_limit());
         }
@@ -1152,6 +1219,16 @@ private:
             slot.phison_kv_flushed_tokens = save_tokens;
             slot.phison_kv_flushed_hash = save_hash;
             if (!slot.phison_cache_subfolder.empty()) {
+                const auto refs = phison_cache_folder_refs.find(slot.phison_cache_subfolder);
+                const bool can_refresh_new_folder =
+                    !slot.phison_cache_folder_existed &&
+                    refs != phison_cache_folder_refs.end() && refs->second == 1;
+                if (can_refresh_new_folder) {
+                    // save_kv_cache creates a new folder already marked as
+                    // locked. Toggle it once so the runtime refreshes the set
+                    // of folders participating in restore operations.
+                    phison_set_cache_folder_lock(slot.phison_cache_subfolder, false);
+                }
                 phison_set_cache_folder_lock(slot.phison_cache_subfolder, true);
             }
         }
@@ -1729,7 +1806,7 @@ private:
                     ret->prompt_save(*prompt_cache);
                 }
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                if (!ret->prompt_load(*prompt_cache, task.tokens, task.params.aidaptiv_cache_id)) {
                     ret->prompt_clear(false);
                 }
 
@@ -1900,8 +1977,8 @@ private:
             send_error(task, "aidaptiv_cache_id requires --aidaptiv-cache-prefix", ERROR_TYPE_INVALID_REQUEST);
             return false;
         }
-        if (slot.task_prev) {
-            const std::string & previous_cache_id = slot.task_prev->params.aidaptiv_cache_id;
+        {
+            const std::string & previous_cache_id = slot.prompt.aidaptiv_cache_id;
             if (previous_cache_id != next_cache_id && (!previous_cache_id.empty() || !next_cache_id.empty())) {
                 SLT_INF(slot, "aiDAPTIV cache identity changed, clearing in-memory slot context: previous=%s next=%s\n",
                         previous_cache_id.empty() ? "default" : phison_cache_log_id(phison_cache_subfolder(previous_cache_id)).c_str(),
@@ -1909,6 +1986,9 @@ private:
                 slot.prompt_clear(false);
             }
         }
+
+        // Keep identity with the prompt state; task_prev is only debugging metadata.
+        slot.prompt.aidaptiv_cache_id = next_cache_id;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
         phison_acquire_cache_folder(slot, slot.task->params.aidaptiv_cache_id);
@@ -2975,6 +3055,19 @@ private:
                         slot.t_start_process_prompt = ggml_time_us();
                         slot.t_start_generation = 0;
 
+                        if (slot.task->params.aidaptiv_cache_build_only && slot.phison_cache_folder_existed) {
+                            SLT_INF(slot, "aiDAPTIV document cache folder already exists; skipping cache-build task: cache=%s\n",
+                                    phison_cache_log_id(slot.phison_cache_subfolder).c_str());
+                            slot.t_start_generation = slot.t_start_process_prompt;
+                            slot.t_prompt_processing = 0.0;
+                            slot.t_token_generation = 0.0;
+                            slot.stop = STOP_TYPE_LIMIT;
+                            slot.has_next_token = false;
+                            send_final_response(slot);
+                            slot.release();
+                            continue;
+                        }
+
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
 
                         SLT_TRC(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, task.n_tokens = %d\n",
@@ -3301,7 +3394,7 @@ private:
                     slot.print_timings_pp();
 
                     // truncate any tokens that are beyond n_past for this slot
-                    const llama_pos p0 = slot.prompt.tokens.pos_next();
+                    llama_pos p0 = slot.prompt.tokens.pos_next();
                     const int prompt_n_past = (int) slot.n_prompt_tokens_cache;
 
                     SLT_TRC(slot, "cached n_tokens = %d, memory_seq_rm [%d, end), prompt_n_past = %d, prompt_pos_next = %d, prompt_common_prefix = %zu\n",
@@ -3366,6 +3459,24 @@ private:
                                 GGML_ABORT("%s", string_format("failed to remove sequence %d with p0=%d, p1=%d\n", slot.id, p0, -1).c_str());
                             }
                         }
+                    }
+
+                    // The host context may not be able to remove an old tail
+                    // (for example Vulkan RS sequences with a rollback larger
+                    // than the supported range). Reuse the external aiDAPTIV
+                    // prefix after clearing the host context instead of
+                    // reprocessing the entire document prompt.
+                    if (reset_prompt_prefix && aiDAPTIV_enabled) {
+                        int reloaded_n_past = phison_restore_slot(slot, input_tokens, 0);
+                        if (reloaded_n_past == slot.task->n_tokens() && reloaded_n_past > 0) {
+                            reloaded_n_past = (int) input_tokens.valid_keep_first((size_t) reloaded_n_past - 1);
+                        }
+                        slot.n_prompt_tokens_cache = reloaded_n_past;
+                        slot.n_prompt_tokens_processed = 0;
+                        slot.prompt.tokens.keep_first(reloaded_n_past);
+                        p0 = slot.prompt.tokens.pos_next();
+                        SLT_WRN(slot, "reloaded aiDAPTIV prefix after unsupported host rollback, n_past = %d, pos_next = %d\n",
+                                reloaded_n_past, p0);
                     }
 
                     const llama_pos kv_pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id);
@@ -3471,6 +3582,13 @@ private:
                             phison_prefill_limit = aligned_n;
                             SLT_DBG(slot, "aiDAPTIV limiting prompt batch to node boundary: cur=%zu target=%zu limit=%zu node_size=%zu\n",
                                     cur_n, target_n, phison_prefill_limit, node_size);
+                        }
+                        const size_t document_prefix = slot.task->params.aidaptiv_cache_prefix_tokens;
+                        const size_t document_boundary = document_prefix - (document_prefix % node_size);
+                        if (document_boundary > cur_n && document_boundary <= target_n) {
+                            phison_prefill_limit = std::min(phison_prefill_limit, document_boundary);
+                            SLT_INF(slot, "aiDAPTIV splitting prompt batch at stable document boundary: cur=%zu target=%zu boundary=%zu\n",
+                                    cur_n, target_n, document_boundary);
                         }
                     }
 
@@ -3784,14 +3902,36 @@ private:
 
                 const size_t decoded_prefix = phison_decoded_prefix_for_slot(slot, batch_view);
                 const size_t node_size = phison_node_size();
-                const size_t final_storable_prefix = ((size_t) slot.task->n_tokens()) - (((size_t) slot.task->n_tokens()) % node_size);
+                const size_t document_prefix = slot.task->params.aidaptiv_cache_prefix_tokens;
+                const size_t final_storable_prefix = document_prefix > 0
+                    ? document_prefix - (document_prefix % node_size)
+                    : ((size_t) slot.task->n_tokens()) - (((size_t) slot.task->n_tokens()) % node_size);
                 if (slot.state == SLOT_STATE_DONE_PROMPT && decoded_prefix >= (size_t) slot.task->n_tokens()) {
-                    phison_save_slot(slot, final_storable_prefix, "prompt", true);
+                    if (document_prefix == 0 || slot.task->params.aidaptiv_cache_build_only) {
+                        phison_save_slot(slot, final_storable_prefix, "prompt", true);
+                    }
                 } else if (final_storable_prefix > 0 && decoded_prefix >= final_storable_prefix && final_storable_prefix > slot.phison_kv_saved_tokens) {
                     // Do not leave a pending aiDAPTIV write for the cancellation path.
                     // Hybrid models can reject save/flush calls after inference has
                     // already been interrupted, leaving an incomplete cache folder.
-                    phison_save_slot(slot, final_storable_prefix, "prefill", true);
+                    if (document_prefix == 0) {
+                        phison_save_slot(slot, final_storable_prefix, "prefill", true);
+                    }
+                }
+
+                if (slot.task->params.aidaptiv_cache_build_only &&
+                    slot.state == SLOT_STATE_DONE_PROMPT &&
+                    decoded_prefix >= (size_t) slot.task->n_tokens()) {
+                    const int64_t now = ggml_time_us();
+                    slot.t_start_generation = now;
+                    slot.t_prompt_processing = (now - slot.t_start_process_prompt) / 1e3;
+                    slot.t_token_generation = 0.0;
+                    slot.stop = STOP_TYPE_LIMIT;
+                    slot.has_next_token = false;
+                    metrics.on_prompt_eval(slot);
+                    slot.print_timings();
+                    send_final_response(slot);
+                    slot.release();
                 }
             }
 
@@ -4161,6 +4301,15 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             inputs = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true);
         }
 
+        std::vector<server_tokens> aidaptiv_prefix_inputs;
+        if (data.contains("__aidaptiv_cache_prefix_prompt")) {
+            const std::string prefix_prompt = json_value(data, "__aidaptiv_cache_prefix_prompt", std::string());
+            if (!prefix_prompt.empty()) {
+                aidaptiv_prefix_inputs = tokenize_input_prompts(
+                        ctx_server.vocab, ctx_server.mctx, prefix_prompt, true, true);
+            }
+        }
+
         for (size_t i = 0; i < inputs.size(); ++i) {
             const auto & tokens = inputs[i].get_all_tokens();
             std::string joined;
@@ -4195,6 +4344,32 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     meta->slot_n_ctx,
                     meta->logit_bias_eog,
                     data);
+            if (!aidaptiv_prefix_inputs.empty() && !task.params.aidaptiv_cache_id.empty()) {
+                const size_t prefix_tokens = aidaptiv_prefix_inputs[0].get_common_prefix(task.tokens);
+                task.params.aidaptiv_cache_prefix_tokens = task.tokens.valid_keep_first(prefix_tokens);
+                SRV_INF("derived aiDAPTIV document prefix boundary: cache=%s tokens=%zu rendered_tokens=%zu\n",
+                        task.params.aidaptiv_cache_id.substr(0, std::min<size_t>(19, task.params.aidaptiv_cache_id.size())).c_str(),
+                        task.params.aidaptiv_cache_prefix_tokens,
+                        aidaptiv_prefix_inputs[0].size());
+            }
+            if (task.params.aidaptiv_cache_build_only) {
+                if (task.params.aidaptiv_cache_prefix_tokens == 0) {
+                    throw std::invalid_argument("aidaptiv_cache_build_only requires a valid document prefix boundary");
+                }
+                const bool hybrid = ctx_server.model_tgt &&
+                    (llama_model_is_recurrent(ctx_server.model_tgt) || llama_model_is_hybrid(ctx_server.model_tgt));
+                const size_t node_size = hybrid ? 128u : 8u;
+                const size_t build_tokens = task.params.aidaptiv_cache_prefix_tokens -
+                    (task.params.aidaptiv_cache_prefix_tokens % node_size);
+                if (build_tokens == 0) {
+                    throw std::invalid_argument("aiDAPTIV document prefix is smaller than one cache node");
+                }
+                task.tokens.keep_first(build_tokens);
+                task.params.aidaptiv_cache_prefix_tokens = build_tokens;
+                task.params.n_predict = 0;
+                SRV_INF("aiDAPTIV cache-build task truncated to stable prefix: tokens=%zu node_size=%zu\n",
+                        build_tokens, node_size);
+            }
             task.id_slot = json_value(data, "id_slot", -1);
 
             // OAI-compat
@@ -4626,6 +4801,7 @@ void server_routes::init_routes() {
             { "is_sleeping",                 queue_tasks.is_sleeping() },
             { "capabilities",                json {
                 { "aidaptiv_cache_subfolder", !params.aidaptiv_cache_prefix.empty() },
+                { "aidaptiv_cache_prefix_boundary", !params.aidaptiv_cache_prefix.empty() },
             } },
         };
         if (params.use_jinja) {

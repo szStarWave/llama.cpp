@@ -1031,6 +1031,11 @@ json oaicompat_chat_params_parse(
 {
     json llama_params;
 
+    const int aidaptiv_cache_prefix_messages = json_value(body, "aidaptiv_cache_prefix_messages", 0);
+    if (aidaptiv_cache_prefix_messages < 0) {
+        throw std::invalid_argument("aidaptiv_cache_prefix_messages must be non-negative");
+    }
+
     auto tools = json_value(body, "tools", json());
     auto has_tools = tools.is_array() && !tools.empty();
     auto stream = json_value(body, "stream", false);
@@ -1081,6 +1086,23 @@ json oaicompat_chat_params_parse(
     json & messages = body.at("messages");
     if (!messages.is_array()) {
         throw std::invalid_argument("Expected 'messages' to be an array");
+    }
+    if (aidaptiv_cache_prefix_messages > 0) {
+        const std::string cache_id = json_value(body, "aidaptiv_cache_id", std::string());
+        if (cache_id.rfind("doc-v1-", 0) != 0) {
+            throw std::invalid_argument("aidaptiv_cache_prefix_messages requires a document aidaptiv_cache_id");
+        }
+        if ((size_t) aidaptiv_cache_prefix_messages >= messages.size()) {
+            throw std::invalid_argument("aidaptiv_cache_prefix_messages must be followed by a user message");
+        }
+        for (int i = 0; i < aidaptiv_cache_prefix_messages; ++i) {
+            if (json_value(messages[(size_t) i], "role", std::string()) != "system") {
+                throw std::invalid_argument("aidaptiv_cache_prefix_messages must cover only leading system messages");
+            }
+        }
+        if (json_value(messages[(size_t) aidaptiv_cache_prefix_messages], "role", std::string()) != "user") {
+            throw std::invalid_argument("aidaptiv_cache_prefix_messages must be followed by a user message");
+        }
     }
     for (auto & msg : messages) {
         std::string role = json_value(msg, "role", std::string());
@@ -1213,6 +1235,23 @@ json oaicompat_chat_params_parse(
     // Apply chat template to the list of messages
     auto chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
 
+    std::string aidaptiv_cache_prefix_prompt;
+    if (aidaptiv_cache_prefix_messages > 0) {
+        auto prefix_inputs = inputs;
+        prefix_inputs.messages.resize((size_t) aidaptiv_cache_prefix_messages + 1);
+        auto & sentinel = prefix_inputs.messages.back();
+        sentinel.role = "user";
+        sentinel.content = "<<<AIDAPTIV_DOCUMENT_PREFIX_BOUNDARY>>>";
+        sentinel.content_parts.clear();
+        sentinel.tool_calls.clear();
+        sentinel.reasoning_content.clear();
+        sentinel.tool_name.clear();
+        sentinel.tool_call_id.clear();
+        prefix_inputs.add_generation_prompt  = false;
+        prefix_inputs.continue_final_message = COMMON_CHAT_CONTINUATION_NONE;
+        aidaptiv_cache_prefix_prompt = common_chat_templates_apply(opt.tmpls.get(), prefix_inputs).prompt;
+    }
+
     llama_params["chat_format"] = static_cast<int>(chat_params.format);
     llama_params["prompt"]      = chat_params.prompt;
     if (!chat_params.grammar.empty()) {
@@ -1273,6 +1312,12 @@ json oaicompat_chat_params_parse(
         if (!llama_params.contains(item.key()) || item.key() == "n_predict") {
             llama_params[item.key()] = item.value();
         }
+    }
+
+    // Internal value rendered with the exact server-side template. The
+    // completion handler tokenizes it and takes the LCP with the full prompt.
+    if (!aidaptiv_cache_prefix_prompt.empty()) {
+        llama_params["__aidaptiv_cache_prefix_prompt"] = std::move(aidaptiv_cache_prefix_prompt);
     }
 
     return llama_params;
