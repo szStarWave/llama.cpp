@@ -66,6 +66,8 @@ struct task_params {
     // server from leading messages using the active chat template/tokenizer.
     size_t aidaptiv_cache_prefix_tokens = 0;
     bool aidaptiv_cache_build_only = false;
+    bool aidaptiv_cache_prompt_preflight = false;
+    bool aidaptiv_cache_prompt_build_only = false;
 
     int32_t n_keep    =  0; // number of tokens to keep from initial prompt
     int32_t n_discard =  0; // number of tokens after n_keep that may be discarded when shifting context, 0 defaults to half

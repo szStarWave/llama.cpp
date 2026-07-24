@@ -290,6 +290,8 @@ task_params server_task::params_from_json_cmpl(
         throw std::invalid_argument("aidaptiv_cache_id must be doc-v1-<64 lowercase hex> or thread-v1-<64 lowercase hex>");
     }
     params.aidaptiv_cache_build_only = json_value(data, "aidaptiv_cache_build_only", false);
+    params.aidaptiv_cache_prompt_preflight = json_value(data, "aidaptiv_cache_prompt_preflight", false);
+    params.aidaptiv_cache_prompt_build_only = json_value(data, "aidaptiv_cache_prompt_build_only", false);
     params.return_tokens    = json_value(data,       "return_tokens",      false);
     params.return_progress  = json_value(data,       "return_progress",    false);
     auto max_tokens         = json_value(data,       "max_tokens",         defaults.n_predict);

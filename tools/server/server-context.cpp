@@ -171,6 +171,7 @@ struct server_slot {
     uint64_t phison_kv_saved_hash = 0;
     size_t phison_kv_flushed_tokens = 0;
     uint64_t phison_kv_flushed_hash = 0;
+    bool phison_kv_restored_this_task = false;
     std::string phison_cache_subfolder;
     bool phison_cache_folder_existed = false;
 
@@ -200,6 +201,15 @@ struct server_slot {
         bool res = prompt_cache.load(prompt, tokens, aidaptiv_cache_id, ctx_tgt, ctx_dft, id);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
+        } else {
+            // The prompt cache does not carry aiDAPTIV persistence metadata.
+            // Do not let bookkeeping from the slot's previous prompt suppress
+            // a required save for the prompt that was just loaded.
+            phison_kv_saved = false;
+            phison_kv_saved_tokens = 0;
+            phison_kv_saved_hash = 0;
+            phison_kv_flushed_tokens = 0;
+            phison_kv_flushed_hash = 0;
         }
 
         return res;
@@ -224,6 +234,7 @@ struct server_slot {
         phison_kv_saved_hash = 0;
         phison_kv_flushed_tokens = 0;
         phison_kv_flushed_hash = 0;
+        phison_kv_restored_this_task = false;
     }
 
     std::vector<common_adapter_lora_info> lora;
@@ -616,6 +627,7 @@ struct server_slot {
         other.phison_kv_saved_hash      = phison_kv_saved_hash;
         other.phison_kv_flushed_tokens  = phison_kv_flushed_tokens;
         other.phison_kv_flushed_hash    = phison_kv_flushed_hash;
+        other.phison_kv_restored_this_task = phison_kv_restored_this_task;
 
         other.prompt = prompt.clone();
         other.init_sampler();
@@ -982,10 +994,13 @@ private:
         const bool is_recurrent_or_hybrid = model_tgt && (llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt));
         const size_t restore_node_size = phison_node_size();
 
-        uint32_t hit_in_device = (uint32_t) std::max(0, n_past);
-        SRV_DBG("phison_restore_slot enter: slot=%d adptv=%p enabled=%d task_type=%d n_past=%d hit_in_device=%u kv_pos_max_before=%d input_tokens=%zu prompt_tokens=%zu common_prefix=%zu pos_next=%d is_recurrent_or_hybrid=%d node_size=%zu\n",
-                slot.id, (void *) adptv, adptv_enabled, task_type, n_past, hit_in_device, kv_pos_max_before, input_n, prompt_n, common_n, slot.prompt.tokens.pos_next(), (int) is_recurrent_or_hybrid, restore_node_size);
-        if (!aidaptiv_kv_enabled() || adptv == nullptr || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
+        const size_t host_n_past = std::min<size_t>((size_t) std::max(0, n_past), common_n);
+        size_t sdk_hit_in_device = host_n_past - (host_n_past % restore_node_size);
+        sdk_hit_in_device = input_tokens.valid_keep_first(sdk_hit_in_device);
+        uint32_t hit_in_device = (uint32_t) std::min<size_t>(sdk_hit_in_device, UINT32_MAX);
+        SRV_DBG("phison_restore_slot enter: slot=%d adptv=%p enabled=%d task_type=%d n_past=%d host_n_past=%zu sdk_hit_in_device=%u kv_pos_max_before=%d input_tokens=%zu prompt_tokens=%zu common_prefix=%zu pos_next=%d is_recurrent_or_hybrid=%d node_size=%zu\n",
+                slot.id, (void *) adptv, adptv_enabled, task_type, n_past, host_n_past, hit_in_device, kv_pos_max_before, input_n, prompt_n, common_n, slot.prompt.tokens.pos_next(), (int) is_recurrent_or_hybrid, restore_node_size);
+        if (!aidaptiv_kv_enabled() || adptv == nullptr || !slot.task || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
             SRV_DBG("phison_restore_slot skip: slot=%d\n", slot.id);
             return n_past;
         }
@@ -1004,9 +1019,9 @@ private:
             lookup_limit = std::min(lookup_limit, document_prefix_limit);
         }
         if ((aidaptiv_limit_multi_mtmd_prefix || document_prefix_limit > 0) &&
-            (size_t) hit_in_device >= lookup_limit) {
-            SRV_DBG("phison_restore_slot skip: slot=%d hit_in_device=%u lookup_limit=%zu\n",
-                    slot.id, hit_in_device, lookup_limit);
+            host_n_past >= lookup_limit) {
+            SRV_DBG("phison_restore_slot skip: slot=%d host_n_past=%zu sdk_hit_in_device=%u lookup_limit=%zu\n",
+                    slot.id, host_n_past, hit_in_device, lookup_limit);
             return n_past;
         }
         // Align the tokens passed to restore_kv_cache to the node size.
@@ -1033,20 +1048,22 @@ private:
         const auto loras = phison_active_loras(slot);
         SRV_DBG("phison_restore_slot call restore: slot=%d mtmd=%zu lora=%zu tokens=%zu\n",
                 slot.id, mtmd_info.size(), loras.size(), restore_tokens.size());
+        const int64_t restore_start = ggml_time_us();
         auto stats = adptv->restore_kv_cache(restore_tokens, mtmd_info, loras, slot.id, hit_in_device);
+        const double restore_ms = (ggml_time_us() - restore_start) / 1000.0;
 
         uint32_t n_reuse = stats.dram_reuse_token_cnt + stats.ssd_reuse_token_cnt;
         const bool managed_cache = slot.task && !slot.task->params.aidaptiv_cache_id.empty();
         const bool stale_checkpoint =
-            managed_cache && hit_in_device > 0 && n_reuse == 0 && common_n > (size_t) hit_in_device + restore_node_size;
+            managed_cache && host_n_past > 0 && n_reuse == 0 && common_n > host_n_past + restore_node_size;
         if (stale_checkpoint) {
             const auto checkpoint = std::find_if(
                 slot.prompt.checkpoints.rbegin(),
                 slot.prompt.checkpoints.rend(),
-                [&](const auto & cur) { return cur.n_tokens == (int64_t) hit_in_device; });
+                [&](const auto & cur) { return cur.n_tokens == (int64_t) host_n_past; });
             if (checkpoint != slot.prompt.checkpoints.rend()) {
                 SLT_WRN(slot, "aiDAPTIV did not extend stale host checkpoint (%u of %zu common tokens); retrying cache restore from zero\n",
-                        hit_in_device, common_n);
+                        (uint32_t) host_n_past, common_n);
                 common_context_seq_rm(ctx_tgt, slot.id, 0, -1);
                 if (ctx_dft) {
                     common_context_seq_rm(ctx_dft.get(), slot.id, 0, -1);
@@ -1054,7 +1071,7 @@ private:
 
                 auto retry_stats = adptv->restore_kv_cache(restore_tokens, mtmd_info, loras, slot.id, 0);
                 const uint32_t retry_reuse = retry_stats.dram_reuse_token_cnt + retry_stats.ssd_reuse_token_cnt;
-                if (retry_reuse > hit_in_device) {
+                if (retry_reuse > host_n_past) {
                     stats = retry_stats;
                     n_reuse = retry_reuse;
                     hit_in_device = 0;
@@ -1070,18 +1087,25 @@ private:
         const size_t restore_cap = (aidaptiv_limit_multi_mtmd_prefix || document_prefix_limit > 0)
             ? aligned_tokens
             : all_tokens.size() - 1;
-        size_t n_new = std::min<size_t>(restore_cap, (size_t) hit_in_device + n_reuse);
+        const size_t restored_n = std::min<size_t>(restore_cap, (size_t) hit_in_device + n_reuse);
+        size_t n_new = std::max(host_n_past, restored_n);
         n_new = input_tokens.valid_keep_first(n_new);
-        if (n_new > 0) {
+        if (n_reuse > 0 && restored_n > 0) {
             slot.phison_kv_saved = true;
-            slot.phison_kv_saved_tokens = std::max(slot.phison_kv_saved_tokens, n_new);
-            slot.phison_kv_saved_hash = stable_token_hash(all_tokens, n_new);
-            slot.phison_kv_flushed_tokens = std::max(slot.phison_kv_flushed_tokens, n_new);
-            slot.phison_kv_flushed_hash = slot.phison_kv_saved_hash;
+            slot.phison_kv_restored_this_task = true;
+            const uint64_t restored_hash = stable_token_hash(all_tokens, restored_n);
+            if (restored_n >= slot.phison_kv_saved_tokens) {
+                slot.phison_kv_saved_tokens = restored_n;
+                slot.phison_kv_saved_hash = restored_hash;
+            }
+            if (restored_n >= slot.phison_kv_flushed_tokens) {
+                slot.phison_kv_flushed_tokens = restored_n;
+                slot.phison_kv_flushed_hash = restored_hash;
+            }
         }
         const size_t common_after_restore = slot.prompt.tokens.get_common_prefix(input_tokens);
-        SRV_DBG("phison_restore_slot restore result: slot=%d n_reuse=%u n_new=%zu common_prefix_before=%zu common_prefix_after=%zu input_valid=%zu\n",
-                slot.id, n_reuse, n_new, common_n, common_after_restore, input_tokens.valid_keep_first(all_tokens.size()));
+        SRV_DBG("phison_restore_slot restore result: slot=%d host_n_past=%zu sdk_hit_in_device=%u n_reuse=%u restored_n=%zu n_new=%zu restore_ms=%.3f common_prefix_before=%zu common_prefix_after=%zu input_valid=%zu\n",
+                slot.id, host_n_past, hit_in_device, n_reuse, restored_n, n_new, restore_ms, common_n, common_after_restore, input_tokens.valid_keep_first(all_tokens.size()));
 
         const bool preserve_external_kv = adptv != nullptr;
         const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id);
@@ -1189,6 +1213,22 @@ private:
 
         const auto mtmd_info = slot.prompt.tokens.get_aidaptiv_mtmd_info(save_tokens);
         const uint64_t save_hash = stable_token_hash(all_tokens, save_tokens);
+        const bool restore_then_save_extension =
+            slot.phison_kv_restored_this_task &&
+            model_tgt && (llama_model_is_recurrent(model_tgt) || llama_model_is_hybrid(model_tgt)) &&
+            slot.phison_kv_flushed_tokens > 0 &&
+            slot.phison_kv_flushed_tokens < save_tokens &&
+            slot.phison_kv_flushed_tokens <= all_tokens.size() &&
+            stable_token_hash(all_tokens, slot.phison_kv_flushed_tokens) == slot.phison_kv_flushed_hash;
+        if (restore_then_save_extension) {
+            // The Phison SDK rejects save_kv_cache after restoring a hybrid
+            // sequence in the same completion (MDW-EPC-9998). The restored
+            // prefix remains reusable; only its newly decoded tail stays in
+            // device memory for the immediately following real completion.
+            SLT_INF(slot, "aiDAPTIV restored %zu persisted tokens; skipping unsafe same-completion extension to %zu\n",
+                    slot.phison_kv_flushed_tokens, save_tokens);
+            return false;
+        }
         if (save_tokens <= slot.phison_kv_saved_tokens && save_hash == slot.phison_kv_saved_hash) {
             if (flush && (save_tokens > slot.phison_kv_flushed_tokens || save_hash != slot.phison_kv_flushed_hash)) {
                 adptv->flush_kv_cache();
@@ -1208,14 +1248,19 @@ private:
                 slot.id, save_tokens, (unsigned long long) save_hash,
                 save_tokens == 0 ? -1 : all_tokens.front(),
                 save_tokens == 0 ? -1 : all_tokens[save_tokens - 1]);
+        const int64_t save_start = ggml_time_us();
         adptv->save_kv_cache(
                 llama_tokens(all_tokens.begin(), all_tokens.begin() + (ptrdiff_t) save_tokens),
                 mtmd_info,
                 loras,
                 slot.id,
                 slot.phison_cache_subfolder);
+        const double save_ms = (ggml_time_us() - save_start) / 1000.0;
+        double flush_ms = 0.0;
         if (flush) {
+            const int64_t flush_start = ggml_time_us();
             adptv->flush_kv_cache();
+            flush_ms = (ggml_time_us() - flush_start) / 1000.0;
             slot.phison_kv_flushed_tokens = save_tokens;
             slot.phison_kv_flushed_hash = save_hash;
             if (!slot.phison_cache_subfolder.empty()) {
@@ -1235,10 +1280,12 @@ private:
         slot.phison_kv_saved = true;
         slot.phison_kv_saved_tokens = save_tokens;
         slot.phison_kv_saved_hash = save_hash;
-        SLT_INF(slot, "aiDAPTIV saved KV cache, n_tokens = %zu%s, reason = %s\n",
+        SLT_INF(slot, "aiDAPTIV saved KV cache, n_tokens = %zu%s, reason = %s, save_ms = %.3f, flush_ms = %.3f\n",
                 save_tokens,
                 save_tokens != all_tokens.size() ? " (aligned)" : "",
-                reason);
+                reason,
+                save_ms,
+                flush_ms);
         return true;
     }
 
@@ -1806,7 +1853,14 @@ private:
                     ret->prompt_save(*prompt_cache);
                 }
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens, task.params.aidaptiv_cache_id)) {
+                if (task.params.aidaptiv_cache_prompt_build_only) {
+                    // A recurrent/hybrid prompt-cache snapshot can contain an
+                    // unaligned tail that cannot be rolled back far enough for
+                    // another conversation. Let aiDAPTIV restore its aligned
+                    // persistent prefix instead of loading that host tail.
+                    SLT_INF(*ret, "%s", "bypassing host prompt-cache load for aiDAPTIV prompt cache-build\n");
+                    ret->prompt_clear(false);
+                } else if (!ret->prompt_load(*prompt_cache, task.tokens, task.params.aidaptiv_cache_id)) {
                     ret->prompt_clear(false);
                 }
 
@@ -1990,6 +2044,7 @@ private:
         // Keep identity with the prompt state; task_prev is only debugging metadata.
         slot.prompt.aidaptiv_cache_id = next_cache_id;
 
+        slot.phison_kv_restored_this_task = false;
         slot.task = std::make_unique<const server_task>(std::move(task));
         phison_acquire_cache_folder(slot, slot.task->params.aidaptiv_cache_id);
 
@@ -3370,6 +3425,33 @@ private:
                             SLT_WRN(slot, "n_past was set to %d\n", n_past);
                         }
 
+                        if (slot.task->params.aidaptiv_cache_prompt_build_only &&
+                            (size_t) n_past >= slot.task->params.aidaptiv_cache_prefix_tokens) {
+                            const size_t build_tokens = slot.task->params.aidaptiv_cache_prefix_tokens;
+                            const auto & all_tokens = slot.task->tokens.get_all_tokens();
+                            const uint64_t build_hash = stable_token_hash(all_tokens, build_tokens);
+                            const bool already_flushed =
+                                slot.phison_kv_flushed_tokens >= build_tokens &&
+                                slot.phison_kv_flushed_hash == build_hash;
+                            if (!already_flushed) {
+                                SLT_INF(slot, "aiDAPTIV RAM prompt covers build boundary without flush proof; persisting cached=%d boundary=%zu\n",
+                                        n_past, build_tokens);
+                                phison_save_slot(slot, build_tokens, "prompt-preflight", true);
+                            } else {
+                                SLT_INF(slot, "aiDAPTIV prompt cache already covers flushed build boundary: cached=%d boundary=%zu\n",
+                                        n_past, build_tokens);
+                            }
+                            const int64_t now = ggml_time_us();
+                            slot.t_start_generation = now;
+                            slot.t_prompt_processing = (now - slot.t_start_process_prompt) / 1e3;
+                            slot.t_token_generation = 0.0;
+                            slot.stop = STOP_TYPE_LIMIT;
+                            slot.has_next_token = false;
+                            send_final_response(slot);
+                            slot.release();
+                            continue;
+                        }
+
                         slot.n_prompt_tokens_cache = n_past;
                         slot.n_prompt_tokens_processed = 0;
 
@@ -3903,25 +3985,31 @@ private:
                 const size_t decoded_prefix = phison_decoded_prefix_for_slot(slot, batch_view);
                 const size_t node_size = phison_node_size();
                 const size_t document_prefix = slot.task->params.aidaptiv_cache_prefix_tokens;
+                const bool prompt_preflight_managed = slot.task->params.aidaptiv_cache_prompt_preflight;
                 const size_t final_storable_prefix = document_prefix > 0
                     ? document_prefix - (document_prefix % node_size)
                     : ((size_t) slot.task->n_tokens()) - (((size_t) slot.task->n_tokens()) % node_size);
                 if (slot.state == SLOT_STATE_DONE_PROMPT && decoded_prefix >= (size_t) slot.task->n_tokens()) {
-                    if (document_prefix == 0 || slot.task->params.aidaptiv_cache_build_only) {
+                    if ((document_prefix == 0 && !prompt_preflight_managed) ||
+                        slot.task->params.aidaptiv_cache_build_only ||
+                        slot.task->params.aidaptiv_cache_prompt_build_only) {
                         phison_save_slot(slot, final_storable_prefix, "prompt", true);
                     }
                 } else if (final_storable_prefix > 0 && decoded_prefix >= final_storable_prefix && final_storable_prefix > slot.phison_kv_saved_tokens) {
                     // Do not leave a pending aiDAPTIV write for the cancellation path.
                     // Hybrid models can reject save/flush calls after inference has
                     // already been interrupted, leaving an incomplete cache folder.
-                    if (document_prefix == 0) {
+                    if ((document_prefix == 0 && !prompt_preflight_managed) ||
+                        slot.task->params.aidaptiv_cache_prompt_build_only) {
                         phison_save_slot(slot, final_storable_prefix, "prefill", true);
                     }
                 }
 
-                if (slot.task->params.aidaptiv_cache_build_only &&
-                    slot.state == SLOT_STATE_DONE_PROMPT &&
-                    decoded_prefix >= (size_t) slot.task->n_tokens()) {
+                const bool document_build_done = slot.task->params.aidaptiv_cache_build_only &&
+                    slot.state == SLOT_STATE_DONE_PROMPT && decoded_prefix >= (size_t) slot.task->n_tokens();
+                const bool prompt_build_done = slot.task->params.aidaptiv_cache_prompt_build_only &&
+                    decoded_prefix >= slot.task->params.aidaptiv_cache_prefix_tokens;
+                if (document_build_done || prompt_build_done) {
                     const int64_t now = ggml_time_us();
                     slot.t_start_generation = now;
                     slot.t_prompt_processing = (now - slot.t_start_process_prompt) / 1e3;
@@ -4353,6 +4441,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         aidaptiv_prefix_inputs[0].size());
             }
             if (task.params.aidaptiv_cache_build_only) {
+                if (task.params.aidaptiv_cache_prompt_build_only) {
+                    throw std::invalid_argument("document and prompt cache build modes are mutually exclusive");
+                }
                 if (task.params.aidaptiv_cache_prefix_tokens == 0) {
                     throw std::invalid_argument("aidaptiv_cache_build_only requires a valid document prefix boundary");
                 }
@@ -4369,6 +4460,32 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 task.params.n_predict = 0;
                 SRV_INF("aiDAPTIV cache-build task truncated to stable prefix: tokens=%zu node_size=%zu\n",
                         build_tokens, node_size);
+            }
+            if (task.params.aidaptiv_cache_prompt_build_only) {
+                if (!task.params.aidaptiv_cache_prompt_preflight) {
+                    throw std::invalid_argument("aidaptiv_cache_prompt_build_only requires aidaptiv_cache_prompt_preflight");
+                }
+                if (!task.params.aidaptiv_cache_id.empty()) {
+                    throw std::invalid_argument("aidaptiv_cache_prompt_build_only is only valid for the global cache");
+                }
+                const size_t node_size = ctx_server.model_tgt &&
+                    (llama_model_is_recurrent(ctx_server.model_tgt) || llama_model_is_hybrid(ctx_server.model_tgt)) ? 128u : 8u;
+                const size_t prompt_tokens = task.tokens.size();
+                const size_t restorable_tokens = prompt_tokens > 0 ? prompt_tokens - 1 : 0;
+                const size_t build_tokens = restorable_tokens - (restorable_tokens % node_size);
+                if (build_tokens == 0) {
+                    task.params.aidaptiv_cache_prompt_build_only = false;
+                    task.params.n_predict = 0;
+                    SRV_INF("aiDAPTIV prompt cache-build skipped: input_tokens=%zu is smaller than node_size=%zu\n",
+                            prompt_tokens, node_size);
+                } else {
+                    GGML_ASSERT(build_tokens < prompt_tokens);
+                    task.params.aidaptiv_cache_prefix_tokens = build_tokens;
+                    task.tokens.keep_first(build_tokens + 1);
+                    task.params.n_predict = 0;
+                    SRV_INF("aiDAPTIV prompt cache-build task prepared: input_tokens=%zu build_tokens=%zu sentinel_tokens=1 node_size=%zu\n",
+                            prompt_tokens, build_tokens, node_size);
+                }
             }
             task.id_slot = json_value(data, "id_slot", -1);
 
@@ -4802,6 +4919,7 @@ void server_routes::init_routes() {
             { "capabilities",                json {
                 { "aidaptiv_cache_subfolder", !params.aidaptiv_cache_prefix.empty() },
                 { "aidaptiv_cache_prefix_boundary", !params.aidaptiv_cache_prefix.empty() },
+                { "aidaptiv_cache_prompt_preflight", !params.aidaptiv_cache_prefix.empty() },
             } },
         };
         if (params.use_jinja) {
