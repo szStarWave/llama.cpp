@@ -13,8 +13,10 @@
 #include "log.h"
 
 #include <atomic>
+#include <chrono>
 #include <clocale>
 #include <exception>
+#include <memory>
 #include <signal.h>
 #include <thread> // for std::thread::hardware_concurrency
 
@@ -196,6 +198,22 @@ int llama_server(int argc, char ** argv) {
 
     ctx_http.get ("/health",                   ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
+    auto shutdown_requested = std::make_shared<std::atomic_flag>();
+    ctx_http.post("/shutdown",                 ex_wrapper([&ctx_http, &ctx_server, is_router_server, shutdown_requested](const server_http_req &) {
+        auto res = std::make_unique<server_http_res>();
+        res->data = safe_json_to_str({{ "status", "shutting_down" }});
+        if (!shutdown_requested->test_and_set()) {
+            std::thread([&ctx_http, &ctx_server, is_router_server]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                if (is_router_server) {
+                    ctx_http.stop();
+                } else {
+                    ctx_server.terminate();
+                }
+            }).detach();
+        }
+        return res;
+    }));
     ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));
     ctx_http.get ("/props",                    ex_wrapper(routes.get_props));
     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
