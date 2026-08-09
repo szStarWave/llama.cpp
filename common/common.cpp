@@ -1582,7 +1582,6 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
 
     mparams.requant = params.requant;  // tri-state: -1 auto, 0 off, 1 on. Loader resolves auto by arch and disables mmap when active.
     mparams.offload_folder              = params.aidaptiv_offload_folder.empty() ? nullptr : params.aidaptiv_offload_folder.c_str();
-    mparams.temp_uuid                   = params.aidaptiv_temp_uuid;
     mparams.vram_experts_cached_gb      = params.aidaptiv_vram_experts_cached_gb > 0 ? (uint32_t) params.aidaptiv_vram_experts_cached_gb : 0;
     mparams.dram_experts_cached_gb      = params.aidaptiv_dram_experts_cached_gb > 0 ? (uint32_t) params.aidaptiv_dram_experts_cached_gb : 0;
     mparams.shared_buffer_layers        = params.aidaptiv_shared_buffer_layers > 0 ? params.aidaptiv_shared_buffer_layers : 0;

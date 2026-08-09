@@ -39,6 +39,16 @@ def test_server_props():
     assert res.body["capabilities"]["aidaptiv_cache_subfolder"] is True
 
 
+def test_server_shutdown():
+    global server
+    server.start()
+    res = server.make_request("POST", "/shutdown")
+    assert res.status_code == 200
+    assert res.body == {"status": "shutting_down"}
+    assert server.process is not None
+    assert server.process.wait(timeout=5) == 0
+
+
 def test_server_models():
     global server
     server.start()

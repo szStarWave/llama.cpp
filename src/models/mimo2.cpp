@@ -34,6 +34,25 @@ void llama_model_mimo2::load_arch_tensors(llama_model_loader &) {
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
     output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, 0);
 
+    const auto is_moe_layer = [&](uint32_t i) -> bool {
+        return i > 0 && i < (uint32_t) n_layer;
+    };
+
+    const int64_t n_ff_exp = hparams.n_ff_exp;
+
+    const expert_tensor_params expert_params = {
+        { LLM_TENSOR_FFN_GATE_EXPS, "weight", { n_embd, n_ff_exp }, false },
+        { LLM_TENSOR_FFN_DOWN_EXPS, "weight", { n_ff_exp, n_embd }, false },
+        { LLM_TENSOR_FFN_UP_EXPS,   "weight", { n_embd, n_ff_exp }, false }
+    };
+
+    auto expert_mapping_table = is_moe_offload_enabled() ? distribute_expert_tensor(expert_params, n_layer, is_moe_layer) :
+                                                std::unordered_map<std::string, ggml_tensor *>{};
+
+    if (is_moe_offload_enabled()) {
+        offload_expert(expert_params, n_layer, is_moe_layer, n_expert);
+    }
+
     for (int i = 0; i < n_layer_all; ++i) {
         auto & layer = layers[i];
         uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(i);
@@ -58,11 +77,16 @@ void llama_model_mimo2::load_arch_tensors(llama_model_loader &) {
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, TENSOR_NOT_REQUIRED | skip);
 
         // MoE branch
-        int64_t n_ff_exp = hparams.n_ff_exp;
         layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", i), {n_embd, n_expert}, TENSOR_NOT_REQUIRED | skip);
-        layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp,   n_expert}, TENSOR_NOT_REQUIRED | skip);
-        layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, TENSOR_NOT_REQUIRED | skip);
-        layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd, n_ff_exp,   n_expert}, TENSOR_NOT_REQUIRED | skip);
+        if (is_moe_offload_enabled() && is_moe_layer(i) && !need_exclude(i)) {
+            layer.ffn_gate_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
+            layer.ffn_down_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
+            layer.ffn_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i).str()];
+        } else {
+            layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd, n_ff_exp,   n_expert}, TENSOR_NOT_REQUIRED | skip);
+            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, TENSOR_NOT_REQUIRED | skip);
+            layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd, n_ff_exp,   n_expert}, TENSOR_NOT_REQUIRED | skip);
+        }
         layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias", i), {n_expert}, TENSOR_NOT_REQUIRED | skip);
 
         if (is_nextn) {
@@ -71,6 +95,10 @@ void llama_model_mimo2::load_arch_tensors(llama_model_loader &) {
             layer.nextn.hnorm    = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,   "weight", i), {n_embd}, skip);
             layer.layer_out_norm = create_tensor(tn(LLM_TENSOR_LAYER_OUT_NORM, "weight", i), {n_embd}, skip);
         }
+    }
+
+    if (is_moe_offload_enabled()) {
+        create_expert_manager(expert_mapping_table, expert_params, n_layer, is_moe_layer);
     }
 }
 

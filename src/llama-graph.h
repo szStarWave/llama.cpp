@@ -945,6 +945,8 @@ struct llm_graph_context {
     ExpertManager * expert_mgr;
     std::function<bool(uint32_t)> need_exclude;
 
+    mutable ggml_tensor * moe_ids_for_scale = nullptr;
+
     llm_graph_context(const llm_graph_params & params);
     virtual ~llm_graph_context() = default;
 

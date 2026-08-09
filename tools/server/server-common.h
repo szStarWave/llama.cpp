@@ -5,7 +5,6 @@
 #include "llama.h"
 #include "chat.h"
 #include "mtmd.h"
-
 #include "aidaptiv.hpp"
 
 #define JSON_ASSERT GGML_ASSERT
@@ -193,6 +192,7 @@ public:
 
     // appends server tokens, updates the media map. copies media chunks.
     void push_back(server_tokens & tokens);
+
     void copy_prefix_from(const server_tokens & tokens, size_t n);
 
     // for compatibility with context shift and prompt truncation
@@ -200,12 +200,13 @@ public:
 
     // for compatibility with speculative decoding, ctx shift, slot save/load
     const llama_tokens & get_tokens() const;
+
     const llama_tokens & get_all_tokens() const;
 
     llama_tokens get_text_tokens() const;
+
     size_t aidaptiv_mtmd_cache_limit() const;
     std::vector<aidaptiv::mtmd_chunk_info> get_aidaptiv_mtmd_info(size_t n_tokens = (size_t) -1) const;
-    size_t valid_keep_first(size_t n) const;
 
     // for compatibility with speculative decoding
     void set_token(llama_pos pos, llama_token id);
@@ -223,6 +224,7 @@ public:
     }
 
     void keep_first(size_t n);
+    size_t valid_keep_first(size_t n) const;
 
     std::string detokenize(const llama_context * ctx, bool special) const;
 
@@ -266,7 +268,8 @@ llama_tokens tokenize_mixed(const llama_vocab * vocab, const json & json_prompt,
 size_t validate_utf8(const std::string& text);
 
 // process mtmd prompt, return the server_tokens containing both text tokens and media chunks
-server_tokens process_mtmd_prompt(mtmd_context * mctx, std::string prompt, std::vector<raw_buffer> files);
+// if is_placeholder is true, the media chunk will be treated as placeholder for counting tokens; the output tokens are not usable for actual inference (e.g. for submitting a task to server_queue)
+server_tokens process_mtmd_prompt(mtmd_context * mctx, const std::string & prompt, const std::vector<raw_buffer> & files, bool is_placeholder = false);
 
 /**
  * break the input "prompt" object into multiple prompt if needed, then tokenize them
@@ -301,7 +304,7 @@ struct server_chat_params {
     common_chat_templates_ptr tmpls;
     bool allow_image;
     bool allow_audio;
-    bool allow_video = false;
+    bool allow_video;
     bool enable_thinking = true;
     int  reasoning_budget = -1;
     std::string reasoning_budget_message;

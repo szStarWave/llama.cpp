@@ -114,18 +114,13 @@ class AIDAPTIV_API Aidaptiv {
               const std::vector<llama_adapter_lora *> & lora_init     = {},
               const std::vector<lora_info> &            lora_adapters = {});
 
-    /** @brief Remove transient/partial caches under the offload root. */
+    /** @brief Remove every unlocked cache under the offload root. */
     void                  remove_temp_caches();
 
-    /**
-     * @brief Generate a unique id for a transient cache folder.
-     *
-     * @pre The offload path passed to the constructor must already exist
-     *      and be writable; this id is derived against that location.
-     *
-     * @return A 64-bit value safe to use as a directory name.
-     */
-    uint64_t              generate_uuid();
+    /** @brief Remove only the expert caches this run published/adopted, skipping
+     *         any still held by another live process. Keeps other runs' caches for
+     *         resume. */
+    void                  remove_owned_temp_caches();
 
     /** @brief Library/build version string. */
     std::string           version();

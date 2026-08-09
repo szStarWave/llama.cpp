@@ -332,7 +332,6 @@ extern "C" {
         int32_t vram_experts_cached_gb;  // vram experts cache size, 0 = disable moe
         int32_t dram_experts_cached_gb;  // dram experts cache size
         int32_t shared_buffer_layers;  // number layers per buffer
-        uint64_t temp_uuid;  // temp cache uuid
         int8_t requant;       // load-time requant of always-on tensors to Q4_K. -1 = auto (on for qwen35/qwen35moe/gemma4/qwen3), 0 = off, 1 = on. Forces no-mmap when active.
     };
 

@@ -441,18 +441,11 @@ llama_tokens server_tokens::get_text_tokens() const {
 }
 
 size_t server_tokens::aidaptiv_mtmd_cache_limit() const {
-    if (!has_mtmd) {
+    if (!has_mtmd || map_idx_to_media.empty()) {
         return (size_t) -1;
     }
 
-    size_t n_media = 0;
-    for (const auto & it : map_idx_to_media) {
-        if (++n_media == 2) {
-            return it.first;
-        }
-    }
-
-    return (size_t) -1;
+    return map_idx_to_media.begin()->first;
 }
 
 std::vector<aidaptiv::mtmd_chunk_info> server_tokens::get_aidaptiv_mtmd_info(size_t max_tokens) const {
@@ -498,10 +491,10 @@ std::vector<aidaptiv::mtmd_chunk_info> server_tokens::get_aidaptiv_mtmd_info(siz
 
                 mrope_pos.resize(n_tokens * 4);
                 for (size_t i = 0; i < n_tokens; ++i) {
-                    mrope_pos[i                 ] = (int32_t) decoder_pos[i].t;
-                    mrope_pos[i + n_tokens      ] = (int32_t) decoder_pos[i].y;
-                    mrope_pos[i + n_tokens * 2  ] = (int32_t) decoder_pos[i].x;
-                    mrope_pos[i + n_tokens * 3  ] = (int32_t) decoder_pos[i].z;
+                    mrope_pos[i               ] = (int32_t) decoder_pos[i].t;
+                    mrope_pos[i + n_tokens    ] = (int32_t) decoder_pos[i].y;
+                    mrope_pos[i + n_tokens * 2] = (int32_t) decoder_pos[i].x;
+                    mrope_pos[i + n_tokens * 3] = (int32_t) decoder_pos[i].z;
                 }
                 mrope_n_pos_advance = (uint32_t) n_pos;
             }
@@ -798,30 +791,19 @@ size_t validate_utf8(const std::string& text) {
     return len;
 }
 
-// Computes FNV-1a hash of the data
-static std::string fnv_hash(const uint8_t * data, size_t len) {
-    const uint64_t fnv_prime = 0x100000001b3ULL;
-    uint64_t hash = 0xcbf29ce484222325ULL;
-
-    for (size_t i = 0; i < len; ++i) {
-        hash ^= data[i];
-        hash *= fnv_prime;
-    }
-    return std::to_string(hash);
-}
-
-server_tokens process_mtmd_prompt(mtmd_context * mctx, std::string prompt, std::vector<raw_buffer> files) {
+server_tokens process_mtmd_prompt(mtmd_context * mctx, const std::string & prompt, const std::vector<raw_buffer> & files, bool is_placeholder) {
+    // these will be freed upon going out of scope
     mtmd::bitmaps bitmaps;
+    std::vector<mtmd_helper::video_ptr> videos;
     for (auto & file : files) {
-        auto out = mtmd_helper_bitmap_init_from_buf(mctx, file.data(), file.size(), false);
-        mtmd::bitmap bmp(out.bitmap);
-        if (!bmp.ptr) {
+        auto out = mtmd_helper_bitmap_init_from_buf(mctx, file.data(), file.size(), is_placeholder);
+        if (!out.bitmap) {
             throw std::runtime_error("Failed to load image or audio file");
         }
-        // calculate bitmap hash (for KV caching)
-        std::string hash = fnv_hash(bmp.data(), bmp.n_bytes());
-        bmp.set_id(hash.c_str());
-        bitmaps.entries.push_back(std::move(bmp));
+        bitmaps.entries.emplace_back(out.bitmap);
+        if (out.video_ctx) {
+            videos.emplace_back(out.video_ctx);
+        }
     }
     // process prompt
     std::vector<server_tokens> inputs;
@@ -1314,8 +1296,6 @@ json oaicompat_chat_params_parse(
         }
     }
 
-    // Internal value rendered with the exact server-side template. The
-    // completion handler tokenizes it and takes the LCP with the full prompt.
     if (!aidaptiv_cache_prefix_prompt.empty()) {
         llama_params["__aidaptiv_cache_prefix_prompt"] = std::move(aidaptiv_cache_prefix_prompt);
     }

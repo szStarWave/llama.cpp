@@ -140,7 +140,7 @@ void llama_model_glm_dsa::load_arch_tensors(llama_model_loader &) {
             }
 
             // MoE branch
-            if (is_moe_offload_enabled() && !need_exclude(i)) {
+            if (is_moe_offload_enabled() && is_moe_layer(i) && !need_exclude(i)) {
                 layer.ffn_gate_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
                 layer.ffn_down_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
                 layer.ffn_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i).str()];

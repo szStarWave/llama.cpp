@@ -31,6 +31,24 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
     add((new field_bool("cache_prompt", params.cache_prompt))
         ->set_desc("Re-use KV cache from a previous request if possible. This way the common prefix does not have to be re-processed, only the suffix that differs between the requests"));
 
+    add((new field_json("aidaptiv_cache_id"))
+        ->set_desc("Application-owned aiDAPTIV cache id")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.aidaptiv_cache_id = data.at("aidaptiv_cache_id").get<std::string>();
+            if (!ctx.params.aidaptiv_cache_id.empty() && !server_is_valid_aidaptiv_cache_id(ctx.params.aidaptiv_cache_id)) {
+                throw std::invalid_argument("aidaptiv_cache_id must be doc-v1-<64 lowercase hex> or thread-v1-<64 lowercase hex>");
+            }
+        }));
+
+    add((new field_bool("aidaptiv_cache_build_only", params.aidaptiv_cache_build_only))
+        ->set_desc("Build only the application-owned aiDAPTIV document prefix cache"));
+
+    add((new field_bool("aidaptiv_cache_prompt_preflight", params.aidaptiv_cache_prompt_preflight))
+        ->set_desc("Enable aiDAPTIV prompt cache preflight behavior"));
+
+    add((new field_bool("aidaptiv_cache_prompt_build_only", params.aidaptiv_cache_prompt_build_only))
+        ->set_desc("Build only the global aiDAPTIV prompt cache"));
+
     add((new field_bool("return_tokens", params.return_tokens))
         ->set_desc("Return the raw generated token ids in the `tokens` field"));
 

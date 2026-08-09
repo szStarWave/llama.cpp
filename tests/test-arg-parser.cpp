@@ -12,6 +12,8 @@
 
 static void test(void) {
     common_params params;
+    assert(params.checkpoint_every_nt == 8192);
+    assert(params.checkpoint_min_step == 256);
 
     printf("test-arg-parser: make sure there is no duplicated arguments in any examples\n\n");
     for (int ex = 0; ex < LLAMA_EXAMPLE_COUNT; ex++) {

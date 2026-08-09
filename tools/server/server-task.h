@@ -13,8 +13,6 @@
 
 using json = nlohmann::ordered_json;
 
-// Shared by request parsing and aiDAPTIV subfolder ownership checks. Keep all
-// accepted cache identity schemas in this validator.
 bool server_is_valid_aidaptiv_cache_id(const std::string & value);
 
 enum server_task_type {
@@ -59,11 +57,8 @@ struct task_params {
     bool return_progress = false;
 
     int32_t sse_ping_interval = 30; // seconds between SSE comment pings while the stream stays silent, -1 disables
-    // Stable application-provided identity for an isolated aiDAPTIV KV cache.
-    std::string aidaptiv_cache_id;
 
-    // Token boundary of the canonical document prefix. This is derived by the
-    // server from leading messages using the active chat template/tokenizer.
+    std::string aidaptiv_cache_id;
     size_t aidaptiv_cache_prefix_tokens = 0;
     bool aidaptiv_cache_build_only = false;
     bool aidaptiv_cache_prompt_preflight = false;
@@ -599,7 +594,6 @@ struct server_task_result_apply_lora : server_task_result {
 
 struct server_prompt {
     server_tokens tokens;
-    // Empty means the legacy global prompt cache used by ordinary requests.
     std::string aidaptiv_cache_id;
 
     std::list<common_prompt_checkpoint> checkpoints;

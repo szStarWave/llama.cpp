@@ -704,7 +704,6 @@ struct aidaptiv_moe_offload_params {
     int32_t     vram_experts_per_layer = -1;
     int32_t     dram_experts_per_layer = -1;
     int32_t     shared_buffer_layers   = -1;
-    uint64_t    temp_uuid              = 0;
     std::string offload_folder;
 };
 

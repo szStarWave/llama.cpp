@@ -61,17 +61,13 @@ Use `adptv.offload_path()` for all later `offload_folder` settings (it may diffe
 | Parameter                | Description                                                              |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `offload_folder`         | Directory for offload data. Use `adptv.offload_path().c_str()`.          |
-| `temp_uuid`              | Subfolder id for expert cache. Use `adptv.generate_uuid()`.              |
 | `vram_experts_cached_gb` | VRAM budget (GB) for cached experts. `0` disables MoE offload features.  |
 | `dram_experts_cached_gb` | DRAM budget (GB) for cached experts. `0` disables DRAM-side MoE offload. |
 
 
 ```cpp
-const uint64_t temp_uuid = adptv.generate_uuid();
-
 llama_model_params model_params = llama_model_default_params();
 model_params.offload_folder         = adptv.offload_path().c_str();
-model_params.temp_uuid              = temp_uuid;
 model_params.vram_experts_cached_gb = 3;   // example: 3 GB VRAM for MoE experts
 model_params.dram_experts_cached_gb = 0;   // 0 = disable DRAM-side MoE offload
 

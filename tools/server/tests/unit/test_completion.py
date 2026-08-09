@@ -282,6 +282,7 @@ def test_aidaptiv_cache_id_invalid(cache_id: str):
     assert res.status_code == 400
     assert "aidaptiv_cache_id" in res.body["error"]["message"]
 
+
 def test_json_prompt_no_mtmd():
     global server
     server.start()

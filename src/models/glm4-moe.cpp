@@ -50,7 +50,8 @@ void llama_model_glm4_moe::load_arch_tensors(llama_model_loader &) {
     }
 
     const auto is_moe_layer = [&](uint32_t i) -> bool {
-        return i >= hparams.n_layer_dense_lead;
+        return (i >= hparams.n_layer_dense_lead) &&
+            ((hparams.n_layer_nextn == 0) || (i < (uint32_t) n_layer));
     };
 
     const int64_t n_ff_exp = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
@@ -108,7 +109,7 @@ void llama_model_glm4_moe::load_arch_tensors(llama_model_loader &) {
             // MoE branch
             const int64_t n_ff_exp = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff / n_expert_used;
 
-            if (is_moe_offload_enabled() && !need_exclude(i)) {
+            if (is_moe_offload_enabled() && is_moe_layer(i) && !need_exclude(i)) {
                 layer.ffn_gate_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
                 layer.ffn_down_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
                 layer.ffn_up_exps   = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i).str()];

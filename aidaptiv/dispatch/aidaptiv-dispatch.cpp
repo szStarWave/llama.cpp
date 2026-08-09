@@ -76,6 +76,22 @@ void stub_dsa_get_cached_positions(const llama_kv_cache_dsa &, const llama_seq_i
     aidaptiv_not_loaded("dsa_get_cached_positions");
 }
 
+uint32_t stub_dsv4_get_size(const llama_kv_cache_dsv4 &) {
+    aidaptiv_not_loaded("dsv4_get_size");
+}
+size_t stub_dsv4_get_cache_size(const llama_kv_cache_dsv4 &, uint64_t, uint32_t) {
+    aidaptiv_not_loaded("dsv4_get_cache_size");
+}
+void stub_dsv4_kv_cache_read(llama_kv_cache_dsv4 &, void *, const size_t &, const uint32_t &, const llama_seq_id &, const llama_pos &, const size_t &, bool, uint32_t, const llama_pos *) {
+    aidaptiv_not_loaded("dsv4_kv_cache_read");
+}
+void stub_dsv4_kv_cache_write(llama_kv_cache_dsv4 &, void *, const size_t &, const uint32_t &, const llama_seq_id &, const llama_pos &, const size_t &, bool, uint32_t, const llama_pos *) {
+    aidaptiv_not_loaded("dsv4_kv_cache_write");
+}
+void stub_dsv4_get_cached_positions(const llama_kv_cache_dsv4 &, const llama_seq_id &, const size_t &, bool *, uint32_t) {
+    aidaptiv_not_loaded("dsv4_get_cached_positions");
+}
+
 uint32_t stub_hyb_get_size(const llama_memory_hybrid &) {
     aidaptiv_not_loaded("hyb_get_size");
 }
@@ -187,6 +203,12 @@ const aidaptiv_dispatch stub_dispatch = {
     stub_dsa_kv_cache_write,
     stub_dsa_get_cached_positions,
 
+    stub_dsv4_get_size,
+    stub_dsv4_get_cache_size,
+    stub_dsv4_kv_cache_read,
+    stub_dsv4_kv_cache_write,
+    stub_dsv4_get_cached_positions,
+
     stub_hyb_get_size,
     stub_hyb_get_cache_size,
     stub_hyb_kv_cache_read,
@@ -269,12 +291,12 @@ void llama_register_aidaptiv_dispatch(const aidaptiv_dispatch *        disp,
     AIDP_CHECK(sizeof_llama_kv_cache);
     AIDP_CHECK(sizeof_llama_kv_cache_iswa);
     AIDP_CHECK(sizeof_llama_kv_cache_dsa);
+    AIDP_CHECK(sizeof_llama_kv_cache_dsv4);
     AIDP_CHECK(sizeof_llama_memory_recurrent);
     AIDP_CHECK(sizeof_llama_memory_hybrid);
     AIDP_CHECK(sizeof_llama_memory_hybrid_iswa);
     AIDP_CHECK(sizeof_llama_hparams);
     AIDP_CHECK(offsetof_llama_model_params__offload_folder);
-    AIDP_CHECK(offsetof_llama_model_params__temp_uuid);
     AIDP_CHECK(offsetof_llama_model_params__vram_experts_cached_gb);
 #undef AIDP_CHECK
 

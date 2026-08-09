@@ -3,6 +3,7 @@
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
 #include "llama-kv-cache-dsa.h"
+#include "llama-kv-cache-dsv4.h"
 #include "llama-memory-hybrid.h"
 #include "llama-memory-hybrid-iswa.h"
 #include "llama-memory-recurrent.h"
@@ -25,6 +26,7 @@ struct aidaptiv_abi_fingerprint {
     size_t   sizeof_llama_kv_cache;
     size_t   sizeof_llama_kv_cache_iswa;
     size_t   sizeof_llama_kv_cache_dsa;
+    size_t   sizeof_llama_kv_cache_dsv4;
     size_t   sizeof_llama_memory_recurrent;
     size_t   sizeof_llama_memory_hybrid;
     size_t   sizeof_llama_memory_hybrid_iswa;
@@ -32,7 +34,6 @@ struct aidaptiv_abi_fingerprint {
 
     // offsetof of fields aidaptiv-core dereferences (most common drift source)
     size_t   offsetof_llama_model_params__offload_folder;
-    size_t   offsetof_llama_model_params__temp_uuid;
     size_t   offsetof_llama_model_params__vram_experts_cached_gb;
 };
 
@@ -65,6 +66,13 @@ struct aidaptiv_dispatch {
     void     (*dsa_kv_cache_read     )(llama_kv_cache_dsa & self, void * ptr, const size_t & node_stride, const uint32_t & node_size, const llama_seq_id & seq_id, const llama_pos & start_pos, const size_t & count, bool is_last_node, uint32_t mask, const llama_pos * mrope_pos);
     void     (*dsa_kv_cache_write    )(llama_kv_cache_dsa & self, void * ptr, const size_t & node_stride, const uint32_t & node_size, const llama_seq_id & seq_id, const llama_pos & start_pos, const size_t & count, bool is_last_node, uint32_t mask, const llama_pos * mrope_pos);
     void     (*dsa_get_cached_positions)(const llama_kv_cache_dsa & self, const llama_seq_id & seq_id, const size_t & count, bool * cached, uint32_t mask);
+
+    // ---- llama_kv_cache_dsv4 ----
+    uint32_t (*dsv4_get_size          )(const llama_kv_cache_dsv4 & self);
+    size_t   (*dsv4_get_cache_size    )(const llama_kv_cache_dsv4 & self, uint64_t node_size, uint32_t mask);
+    void     (*dsv4_kv_cache_read     )(llama_kv_cache_dsv4 & self, void * ptr, const size_t & node_stride, const uint32_t & node_size, const llama_seq_id & seq_id, const llama_pos & start_pos, const size_t & count, bool is_last_node, uint32_t mask, const llama_pos * mrope_pos);
+    void     (*dsv4_kv_cache_write    )(llama_kv_cache_dsv4 & self, void * ptr, const size_t & node_stride, const uint32_t & node_size, const llama_seq_id & seq_id, const llama_pos & start_pos, const size_t & count, bool is_last_node, uint32_t mask, const llama_pos * mrope_pos);
+    void     (*dsv4_get_cached_positions)(const llama_kv_cache_dsv4 & self, const llama_seq_id & seq_id, const size_t & count, bool * cached, uint32_t mask);
 
     // ---- llama_memory_hybrid ----
     uint32_t (*hyb_get_size          )(const llama_memory_hybrid & self);
@@ -111,7 +119,7 @@ LLAMA_API void llama_register_aidaptiv_dispatch(const aidaptiv_dispatch *       
 
 inline void fill_aidaptiv_abi_fingerprint(aidaptiv_abi_fingerprint & f) {
     f.magic   = 0x41494450u;
-    f.version = 2u;
+    f.version = 3u;
 
     f.sizeof_aidaptiv_dispatch              = sizeof(aidaptiv_dispatch);
     f.sizeof_aidaptiv_moe_offload_params    = sizeof(aidaptiv_moe_offload_params);
@@ -120,12 +128,12 @@ inline void fill_aidaptiv_abi_fingerprint(aidaptiv_abi_fingerprint & f) {
     f.sizeof_llama_kv_cache                 = sizeof(llama_kv_cache);
     f.sizeof_llama_kv_cache_iswa            = sizeof(llama_kv_cache_iswa);
     f.sizeof_llama_kv_cache_dsa             = sizeof(llama_kv_cache_dsa);
+    f.sizeof_llama_kv_cache_dsv4            = sizeof(llama_kv_cache_dsv4);
     f.sizeof_llama_memory_recurrent         = sizeof(llama_memory_recurrent);
     f.sizeof_llama_memory_hybrid            = sizeof(llama_memory_hybrid);
     f.sizeof_llama_memory_hybrid_iswa       = sizeof(llama_memory_hybrid_iswa);
     f.sizeof_llama_hparams                  = sizeof(llama_hparams);
 
     f.offsetof_llama_model_params__offload_folder         = offsetof(llama_model_params, offload_folder);
-    f.offsetof_llama_model_params__temp_uuid              = offsetof(llama_model_params, temp_uuid);
     f.offsetof_llama_model_params__vram_experts_cached_gb = offsetof(llama_model_params, vram_experts_cached_gb);
 }

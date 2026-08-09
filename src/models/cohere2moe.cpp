@@ -75,6 +75,26 @@ void llama_model_cohere2moe::load_arch_tensors(llama_model_loader & ml) {
         throw std::runtime_error("n_expert_used must be > 0 for Cohere2Moe");
     }
 
+    const int64_t n_ff_exp = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff;
+
+    const auto is_moe_layer = [&](uint32_t i) -> bool {
+        return i >= hparams.n_layer_dense_lead;
+    };
+
+    const expert_tensor_params expert_params = {
+        { LLM_TENSOR_FFN_GATE_EXPS,    "weight", { n_embd, n_ff_exp },     true },
+        { LLM_TENSOR_FFN_DOWN_EXPS,    "weight", { n_ff_exp, n_embd },     false },
+        { LLM_TENSOR_FFN_UP_EXPS,      "weight", { n_embd, n_ff_exp },     true },
+        { LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", { n_embd, n_ff_exp * 2 }, true }
+    };
+
+    auto expert_mapping_table = is_moe_offload_enabled() && !mtp_only ? distribute_expert_tensor(expert_params, n_layer, is_moe_layer) :
+                                                std::unordered_map<std::string, ggml_tensor *>{};
+
+    if (is_moe_offload_enabled() && !mtp_only) {
+        offload_expert(expert_params, n_layer, is_moe_layer, n_expert);
+    }
+
     auto load_block_trunk = [&](int i, int flags) {
         auto & layer = layers[i];
 
@@ -88,11 +108,16 @@ void llama_model_cohere2moe::load_arch_tensors(llama_model_loader & ml) {
             layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), { n_ff, n_embd }, flags);
             layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), { n_embd, n_ff }, flags);
         } else {
-            const int64_t n_ff_exp = hparams.n_ff_exp ? hparams.n_ff_exp : n_ff;
-
             layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", i), { n_embd, n_expert }, flags);
-            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), { n_ff_exp, n_embd, n_expert }, flags);
-            create_tensor_gate_up_exps(layer, i, n_embd, n_ff_exp, n_expert, flags);
+            if (is_moe_offload_enabled() && !need_exclude(i) && !mtp_only) {
+                layer.ffn_gate_exps    = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str()];
+                layer.ffn_down_exps    = expert_mapping_table[tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str()];
+                layer.ffn_up_exps      = expert_mapping_table[tn(LLM_TENSOR_FFN_UP_EXPS, "weight", i).str()];
+                layer.ffn_gate_up_exps = expert_mapping_table[tn(LLM_TENSOR_FFN_GATE_UP_EXPS, "weight", i).str()];
+            } else {
+                layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), { n_ff_exp, n_embd, n_expert }, flags);
+                create_tensor_gate_up_exps(layer, i, n_embd, n_ff_exp, n_expert, flags);
+            }
 
             if (hparams.n_expert_shared > 0) {
                 const int64_t n_ff_shexp = hparams.n_ff_shexp ? hparams.n_ff_shexp : n_ff_exp * hparams.n_expert_shared;
@@ -143,6 +168,10 @@ void llama_model_cohere2moe::load_arch_tensors(llama_model_loader & ml) {
     // MTP/NextN layers are loaded as extra decoder blocks.
     for (int i = n_layer; i < n_layer_all; ++i) {
         load_block_mtp(i, mtp_flags);
+    }
+
+    if (is_moe_offload_enabled() && !mtp_only) {
+        create_expert_manager(expert_mapping_table, expert_params, n_layer, is_moe_layer);
     }
 }
 
