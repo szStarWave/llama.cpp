@@ -1,0 +1,24 @@
+#version 450
+
+#include "dequant_head.glsl"
+#include "turbo_quant.glsl"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(binding = 0) readonly buffer A { A_TYPE data_a[]; };
+layout(binding = 1) writeonly buffer D { D_TYPE data_b[]; };
+
+void main() {
+    const uint index = gl_WorkGroupID.x * 128u + gl_LocalInvocationID.x;
+    if (index >= p.nel) return;
+    const uint block = index / 128u;
+    const uint offset = index % 128u;
+#if defined(DATA_A_TURBO3_0)
+    const uint low = (uint(data_a[block].qs[offset / 4u]) >> (2u * (offset % 4u))) & 3u;
+    const uint high = (uint(data_a[block].signs[offset / 8u]) >> (offset % 8u)) & 1u;
+    data_b[index] = D_TYPE(float(data_a[block].norm) * TURBO3_CENTROIDS[low | (high << 2u)]);
+#else
+    const uint packed = uint(data_a[block].qs[offset / 2u]);
+    const uint quant = (packed >> (4u * (offset % 2u))) & 15u;
+    data_b[index] = D_TYPE(float(data_a[block].norm) * TURBO4_CENTROIDS[quant]);
+#endif
+}

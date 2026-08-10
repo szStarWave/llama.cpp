@@ -1033,13 +1033,41 @@ private:
         return is_recurrent_or_hybrid ? 128u : 8u;
     }
 
+    std::string phison_kv_codec_namespace() const {
+        const ggml_type type_k = params_base.cache_type_k;
+        const ggml_type type_v = params_base.cache_type_v;
+        const bool turbo = type_k == GGML_TYPE_TURBO3_0 || type_k == GGML_TYPE_TURBO4_0 ||
+                           type_v == GGML_TYPE_TURBO3_0 || type_v == GGML_TYPE_TURBO4_0;
+        if (!turbo) {
+            return {};
+        }
+        return std::string("turbo-kv-r1-k-") + ggml_type_name(type_k) + "-v-" + ggml_type_name(type_v);
+    }
+
+    llama_tokens phison_kv_cache_key_tokens(const llama_tokens & tokens) const {
+        llama_tokens result = tokens;
+        const std::string codec_namespace = phison_kv_codec_namespace();
+        if (codec_namespace.empty() || result.empty()) {
+            return result;
+        }
+
+        uint32_t hash = 2166136261u;
+        for (const unsigned char c : codec_namespace) {
+            hash = (hash ^ c) * 16777619u;
+        }
+        result[0] = (llama_token) (0x40000000u | (hash & 0x3fffffffu));
+        return result;
+    }
+
     std::string phison_cache_subfolder(const std::string & cache_id) const {
         if (cache_id.empty()) {
             return {};
         }
         GGML_ASSERT(server_is_valid_aidaptiv_cache_id(cache_id));
         GGML_ASSERT(!params_base.aidaptiv_cache_prefix.empty());
-        return params_base.aidaptiv_cache_prefix + cache_id;
+        const std::string codec_namespace = phison_kv_codec_namespace();
+        return params_base.aidaptiv_cache_prefix +
+               (codec_namespace.empty() ? "" : codec_namespace + "-") + cache_id;
     }
 
     static std::string phison_cache_log_id(const std::string & subfolder) {
@@ -1055,7 +1083,17 @@ private:
         if (prefix.empty() || subfolder.rfind(prefix, 0) != 0) {
             return false;
         }
-        return server_is_valid_aidaptiv_cache_id(subfolder.substr(prefix.size()));
+        const std::string suffix = subfolder.substr(prefix.size());
+        if (server_is_valid_aidaptiv_cache_id(suffix)) {
+            return true;
+        }
+        for (const char * marker : { "doc-v1-", "thread-v1-" }) {
+            const size_t pos = suffix.find(marker);
+            if (pos != std::string::npos && server_is_valid_aidaptiv_cache_id(suffix.substr(pos))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool phison_set_cache_folder_lock(const std::string & subfolder, bool locked) {
@@ -1183,6 +1221,12 @@ private:
         const size_t node_size = phison_node_size();
         const size_t common_n = slot.prompt.tokens.get_common_prefix(input_tokens);
         const size_t host_n_past = std::min<size_t>((size_t) std::max(0, n_past), common_n);
+        if (!slot.phison_cache_subfolder.empty() && !slot.phison_cache_folder_existed) {
+            SLT_INF(slot, "aiDAPTIV managed cache is new; skipping persistent restore: cache=%s\n",
+                    phison_cache_log_id(slot.phison_cache_subfolder).c_str());
+            return n_past;
+        }
+
         size_t hit_in_device = host_n_past - (host_n_past % node_size);
         hit_in_device = input_tokens.valid_keep_first(hit_in_device);
 
@@ -1202,7 +1246,8 @@ private:
             return n_past;
         }
 
-        const llama_tokens restore_tokens(all_tokens.begin(), all_tokens.begin() + (ptrdiff_t) aligned_tokens);
+        const llama_tokens restore_tokens_raw(all_tokens.begin(), all_tokens.begin() + (ptrdiff_t) aligned_tokens);
+        const llama_tokens restore_tokens = phison_kv_cache_key_tokens(restore_tokens_raw);
         const auto mtmd_info = input_tokens.get_aidaptiv_mtmd_info(aligned_tokens);
         const auto loras = phison_active_loras(slot);
         auto stats = adptv->restore_kv_cache(restore_tokens, mtmd_info, loras, slot.id, (uint32_t) std::min<size_t>(hit_in_device, UINT32_MAX));
@@ -1313,7 +1358,8 @@ private:
             return false;
         }
 
-        llama_tokens save_seq(all_tokens.begin(), all_tokens.begin() + (ptrdiff_t) save_tokens);
+        const llama_tokens save_seq_raw(all_tokens.begin(), all_tokens.begin() + (ptrdiff_t) save_tokens);
+        const llama_tokens save_seq = phison_kv_cache_key_tokens(save_seq_raw);
         const auto mtmd_info = slot.prompt.tokens.get_aidaptiv_mtmd_info(save_tokens);
         const auto loras = phison_active_loras(slot);
         adptv->save_kv_cache(save_seq, mtmd_info, loras, slot.id, slot.phison_cache_subfolder);

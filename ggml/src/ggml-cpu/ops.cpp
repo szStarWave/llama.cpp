@@ -2,6 +2,7 @@
 
 #include "ggml-cpu.h"
 #include "ggml-impl.h"
+#include "ggml-quants.h"
 #include "binary-ops.h"
 #include "simd-gemm.h"
 #include "ggml.h"
@@ -5191,6 +5192,25 @@ void ggml_compute_forward_set_rows(
             {
                 GGML_ABORT("src0->type = %d (%s) not supported", src0->type, ggml_type_name(src0->type));
             }
+    }
+}
+
+void ggml_compute_forward_turbo_wht(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * src = dst->src[0];
+    GGML_ASSERT(src->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous(src));
+    GGML_ASSERT(src->ne[0] % 128 == 0);
+
+    const int direction = ggml_get_op_params_i32(dst, 0);
+    const int64_t groups = ggml_nelements(src) / 128;
+    const float * src_data = (const float *) src->data;
+    float * dst_data = (float *) dst->data;
+
+    for (int64_t group = params->ith; group < groups; group += params->nth) {
+        ggml_turbo_wht_128(src_data + group * 128, dst_data + group * 128, direction);
     }
 }
 

@@ -1896,6 +1896,35 @@ float ue4m3_to_fp32(uint8_t x) {
 }
 #endif
 
+#define QUANT_K_TURBO3_0 128
+#define QUANT_R_TURBO3_0 1
+struct block_turbo3_0 {
+    float16_t norm;
+    uint8_t qs[32];
+    uint8_t signs[16];
+};
+
+#if defined(DATA_A_TURBO3_0)
+#define QUANT_K QUANT_K_TURBO3_0
+#define QUANT_R QUANT_R_TURBO3_0
+#define QUANT_AUXF 1
+#define A_TYPE block_turbo3_0
+#endif
+
+#define QUANT_K_TURBO4_0 128
+#define QUANT_R_TURBO4_0 1
+struct block_turbo4_0 {
+    float16_t norm;
+    uint8_t qs[64];
+};
+
+#if defined(DATA_A_TURBO4_0)
+#define QUANT_K QUANT_K_TURBO4_0
+#define QUANT_R QUANT_R_TURBO4_0
+#define QUANT_AUXF 1
+#define A_TYPE block_turbo4_0
+#endif
+
 #if BDA
 
 #extension GL_EXT_buffer_reference : enable
