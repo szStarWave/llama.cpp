@@ -181,7 +181,7 @@ class ServerProcess:
             server_args.extend(["--ubatch-size", self.n_ubatch])
         if self.n_threads:
             server_args.extend(["--threads", self.n_threads])
-        if self.n_gpu_layer:
+        if self.n_gpu_layer is not None:
             server_args.extend(["--n-gpu-layers", self.n_gpu_layer])
         if self.server_continuous_batching:
             server_args.append("--cont-batching")
@@ -497,6 +497,8 @@ class ServerPreset:
     @staticmethod
     def load_all() -> None:
         """ Load all server presets to ensure model files are cached. """
+        if "LLAMA_TEST_MODEL_FILE" in os.environ:
+            return
         servers: List[ServerProcess] = [
             method()
             for name, method in ServerPreset.__dict__.items()
@@ -510,9 +512,12 @@ class ServerPreset:
     @staticmethod
     def tinyllama2() -> ServerProcess:
         server = ServerProcess()
-        server.offline = True # will be downloaded by load_all()
-        server.model_hf_repo = "ggml-org/test-model-stories260K"
-        server.model_hf_file = None
+        if "LLAMA_TEST_MODEL_FILE" in os.environ:
+            server.model_file = os.environ["LLAMA_TEST_MODEL_FILE"]
+        else:
+            server.offline = True # will be downloaded by load_all()
+            server.model_hf_repo = "ggml-org/test-model-stories260K"
+            server.model_hf_file = None
         server.model_alias = "tinyllama-2"
         server.n_ctx = 512
         server.n_batch = 32

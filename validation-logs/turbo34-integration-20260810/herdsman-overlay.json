@@ -1,0 +1,5 @@
+{
+  "Replace": {
+    "D:\\code\\herdsman-feature\\super-agent\\pkg\\api\\agui\\models\\llamacpp\\herdsman_e2e_test.go": "D:\\code\\llama.cpp-b9568-phison\\llama.cpp\\validation-logs\\herdsman-e2e-20260809\\herdsman_e2e_test.go"
+  }
+}

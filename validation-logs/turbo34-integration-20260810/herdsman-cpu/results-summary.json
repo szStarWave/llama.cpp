@@ -1,0 +1,46 @@
+[
+  {
+    "kv": "q8_0/turbo3",
+    "phase": "first",
+    "passed": true,
+    "text_cached_tokens": 896,
+    "document_image_cached_tokens": 1536,
+    "single_image_cached_tokens": 0,
+    "two_turn_image_cached_tokens": 1051,
+    "client_exit": 0,
+    "server_exit": 0,
+    "fatal_log_markers": []
+  },
+  {
+    "kv": "q8_0/turbo3",
+    "phase": "restart",
+    "passed": true,
+    "text_cached_tokens": 896,
+    "document_image_cached_tokens": 1536,
+    "client_exit": 0,
+    "server_exit": 0,
+    "fatal_log_markers": []
+  },
+  {
+    "kv": "q8_0/turbo4",
+    "phase": "first",
+    "passed": true,
+    "text_cached_tokens": 896,
+    "document_image_cached_tokens": 1536,
+    "single_image_cached_tokens": 0,
+    "two_turn_image_cached_tokens": 1051,
+    "client_exit": 0,
+    "server_exit": 0,
+    "fatal_log_markers": []
+  },
+  {
+    "kv": "q8_0/turbo4",
+    "phase": "restart",
+    "passed": true,
+    "text_cached_tokens": 896,
+    "document_image_cached_tokens": 1536,
+    "client_exit": 0,
+    "server_exit": 0,
+    "fatal_log_markers": []
+  }
+]

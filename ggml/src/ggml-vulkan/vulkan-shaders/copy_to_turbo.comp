@@ -1,0 +1,104 @@
+#version 450
+
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+
+#include "types.glsl"
+#include "turbo_quant.glsl"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer S { S_TYPE data_s[]; };
+#include "generic_binary_head.glsl"
+layout (binding = 1) readonly buffer C { B_TYPE data_i[]; };
+layout (binding = 2) writeonly buffer Q { A_TYPE data_q[]; };
+
+#if B_SIZE == 64
+#define DATA_I_SWIZZLE .x
+#else
+#define DATA_I_SWIZZLE
+#endif
+
+shared float values[128];
+shared float subgroup_sums[16];
+shared float source_norm;
+
+void main() {
+    const uint lane = gl_LocalInvocationID.x;
+    const uint group = gl_WorkGroupID.z * 262144u + gl_WorkGroupID.y * 512u + gl_WorkGroupID.x;
+    const uint groups_per_row = p.ne00 / 128u;
+    if (groups_per_row == 0u || group >= groups_per_row * p.ne21 * p.ne22 * p.ne23) return;
+
+    uint remaining = group;
+    const uint group_in_row = remaining % groups_per_row; remaining /= groups_per_row;
+    const uint i01 = remaining % p.ne01; remaining /= p.ne01;
+    const uint i02 = remaining % p.ne02;
+    const uint i03 = remaining / p.ne02;
+    if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
+
+    const uint src = src0_idx(group_in_row * 128u, i01, i02, i03) + get_aoffset();
+    const uint row = data_i[src1_idx(i01, fastmod(i02, p.ne11), fastmod(i03, p.ne12), 0) + get_boffset()] DATA_I_SWIZZLE;
+    const uint dst = dst_idx(group_in_row, row, i02, i03) + get_doffset();
+
+    values[lane] = float(data_s[src + lane]);
+    barrier();
+
+    float sum = subgroupAdd(values[lane] * values[lane]);
+    if (gl_SubgroupInvocationID == 0u) subgroup_sums[gl_SubgroupID] = sum;
+    barrier();
+    if (lane == 0u) {
+        sum = 0.0;
+        for (uint i = 0u; i < gl_NumSubgroups; ++i) sum += subgroup_sums[i];
+        source_norm = sqrt(sum);
+    }
+    barrier();
+
+    values[lane] *= source_norm > 1e-10 ? TURBO_WHT_S1[lane] / source_norm : 0.0;
+    barrier();
+    [[unroll]] for (uint step = 1u; step < 128u; step *= 2u) {
+        if ((lane % (2u * step)) < step) {
+            const float a = values[lane];
+            const float b = values[lane + step];
+            values[lane] = a + b;
+            values[lane + step] = a - b;
+        }
+        barrier();
+    }
+
+    const float rotated = values[lane] * 0.08838834764831845 * TURBO_WHT_S2[lane];
+#if defined(DATA_A_TURBO3_0)
+    const uint index = turbo3_index(rotated);
+    const uint low = index & 3u;
+    uint packed = 0u;
+    for (uint i = 0u; i < 4u; ++i) {
+        packed |= subgroupShuffle(low, (gl_SubgroupInvocationID & ~3u) + i) << (2u * i);
+    }
+    if ((gl_SubgroupInvocationID & 3u) == 0u) data_q[dst].qs[lane / 4u] = uint8_t(packed);
+
+    const uvec4 ballot = subgroupBallot((index & 4u) != 0u);
+    if ((gl_SubgroupInvocationID & 7u) == 0u) {
+        const uint word = gl_SubgroupInvocationID / 32u;
+        const uint byte_in_word = (gl_SubgroupInvocationID % 32u) / 8u;
+        data_q[dst].signs[lane / 8u] = uint8_t((ballot[word] >> (8u * byte_in_word)) & 255u);
+    }
+    float reconstructed = TURBO3_CENTROIDS[index] * TURBO3_CENTROIDS[index];
+#else
+    const uint index = turbo4_index(rotated);
+    const uint pair_base = gl_SubgroupInvocationID & ~1u;
+    const uint packed = subgroupShuffle(index, pair_base) |
+                        (subgroupShuffle(index, pair_base + 1u) << 4u);
+    if ((gl_SubgroupInvocationID & 1u) == 0u) data_q[dst].qs[lane / 2u] = uint8_t(packed);
+    float reconstructed = TURBO4_CENTROIDS[index] * TURBO4_CENTROIDS[index];
+#endif
+
+    reconstructed = subgroupAdd(reconstructed);
+    if (gl_SubgroupInvocationID == 0u) subgroup_sums[gl_SubgroupID] = reconstructed;
+    barrier();
+    if (lane == 0u) {
+        reconstructed = 0.0;
+        for (uint i = 0u; i < gl_NumSubgroups; ++i) reconstructed += subgroup_sums[i];
+        const float reconstructed_norm = sqrt(reconstructed);
+        data_q[dst].norm = float16_t(reconstructed_norm > 1e-10 ? source_norm / reconstructed_norm : source_norm);
+    }
+}
