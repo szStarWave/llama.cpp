@@ -429,8 +429,10 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_Q2_0    = 42,
-        GGML_TYPE_COUNT   = 43,
+        GGML_TYPE_Q2_0     = 42,
+        GGML_TYPE_TURBO3_0 = 44,
+        GGML_TYPE_TURBO4_0 = 47,
+        GGML_TYPE_COUNT    = 48,
     };
 
     // precision
@@ -589,6 +591,7 @@ extern "C" {
         GGML_OP_OPT_STEP_SGD,
 
         GGML_OP_GLU,
+        GGML_OP_TURBO_WHT,
 
         GGML_OP_COUNT,
     };
@@ -2582,6 +2585,13 @@ extern "C" {
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state,
             int64_t               K);
+
+    // Signed 128-element Walsh-Hadamard transform used by Turbo KV caches.
+    // direction: 0 = forward, 1 = inverse.
+    GGML_API struct ggml_tensor * ggml_turbo_wht(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   direction);
 
     // DSA lightning indexer
     //

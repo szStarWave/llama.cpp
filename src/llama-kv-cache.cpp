@@ -4,6 +4,7 @@
 #include "llama-io.h"
 #include "llama-model.h"
 #include "llama-context.h"
+#include "llama-turbo.h"
 
 #include <algorithm>
 #include <cassert>
@@ -204,8 +205,28 @@ llama_kv_cache::llama_kv_cache(
         }
 
         // [TAG_V_CACHE_VARIABLE]
-        const uint32_t n_embd_k_gqa =            hparams.n_embd_k_gqa(il);
-        const uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
+        uint32_t n_embd_k_gqa =            hparams.n_embd_k_gqa(il);
+        uint32_t n_embd_v_gqa = !v_trans ? hparams.n_embd_v_gqa(il) : hparams.n_embd_v_gqa_max();
+
+        const uint32_t n_embd_head_k = hparams.n_embd_head_k(il);
+        if (llama_kv_type_is_turbo(type_k)) {
+            const uint32_t n_embd_head_k_padded = llama_turbo_pad_head_dim(n_embd_head_k);
+            n_embd_k_gqa = n_embd_k_gqa / n_embd_head_k * n_embd_head_k_padded;
+            if (il == 0) {
+                LLAMA_LOG_INFO("%s: K type %s, head dim %u -> %u\n", __func__,
+                        ggml_type_name(type_k), n_embd_head_k, n_embd_head_k_padded);
+            }
+        }
+
+        const uint32_t n_embd_head_v = hparams.n_embd_head_v(il);
+        if (!is_mla && llama_kv_type_is_turbo(type_v)) {
+            const uint32_t n_embd_head_v_padded = llama_turbo_pad_head_dim(n_embd_head_v);
+            n_embd_v_gqa = n_embd_v_gqa / n_embd_head_v * n_embd_head_v_padded;
+            if (il == 0) {
+                LLAMA_LOG_INFO("%s: V type %s, head dim %u -> %u\n", __func__,
+                        ggml_type_name(type_v), n_embd_head_v, n_embd_head_v_padded);
+            }
+        }
 
         const char * dev_name = "CPU";
 
@@ -320,6 +341,7 @@ llama_kv_cache::llama_kv_cache(
             !attn_rot_disable &&
             n_embd_head_k_all > 0 &&
             ggml_is_quantized(type_k) &&
+            !llama_kv_type_is_turbo(type_k) &&
             hparams.n_embd_head_k() % 64 == 0;
 
         // always create Hadamard rotation tensors for DeepSeek lightning indexers
@@ -332,6 +354,7 @@ llama_kv_cache::llama_kv_cache(
             !attn_rot_disable &&
             n_embd_head_v_all > 0 &&
             ggml_is_quantized(type_v) &&
+            !llama_kv_type_is_turbo(type_v) &&
             hparams.n_embd_head_v() % 64 == 0;
     }
 
@@ -1248,13 +1271,17 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     const uint64_t kv_size      = get_size();
     const uint64_t n_embd_k_gqa = k->ne[0];
 
-    assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
+    const bool k_is_turbo = llama_kv_type_is_turbo(k->type);
+    assert(k_is_turbo ? n_embd_k_gqa >= hparams.n_embd_k_gqa(il) : n_embd_k_gqa == hparams.n_embd_k_gqa(il));
+
+    const uint32_t n_embd_head_k = hparams.n_embd_head_k(il);
+    const uint32_t n_embd_head_k_eff = k_is_turbo ? llama_turbo_pad_head_dim(n_embd_head_k) : n_embd_head_k;
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 
     return ggml_view_4d(ctx, k,
-            hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
-            ggml_row_size(k->type, hparams.n_embd_head_k(il)),
+            n_embd_head_k_eff, hparams.n_head_kv(il), n_kv, ns,
+            ggml_row_size(k->type, n_embd_head_k_eff),
             ggml_row_size(k->type, n_embd_k_gqa),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size)*sinfo.s0);
@@ -1271,13 +1298,17 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
     // [TAG_V_CACHE_VARIABLE]
     assert(n_embd_v_gqa >= hparams.n_embd_v_gqa(il));
 
+    const uint32_t n_embd_head_v = hparams.n_embd_head_v(il);
+    const uint32_t n_embd_head_v_eff = llama_kv_type_is_turbo(v->type)
+        ? llama_turbo_pad_head_dim(n_embd_head_v) : n_embd_head_v;
+
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
 
     if (!v_trans) {
         // note: v->nb[1] <= v->nb[2]
         return ggml_view_4d(ctx, v,
-                hparams.n_embd_head_v(il), hparams.n_head_kv(il), n_kv, ns,
-                ggml_row_size(v->type, hparams.n_embd_head_v(il)),          // v->nb[1]
+                n_embd_head_v_eff, hparams.n_head_kv(il), n_kv, ns,
+                ggml_row_size(v->type, n_embd_head_v_eff),               // v->nb[1]
                 ggml_row_size(v->type, n_embd_v_gqa),                   // v->nb[2]
                 ggml_row_size(v->type, n_embd_v_gqa*kv_size),           // v->nb[3]
                 ggml_row_size(v->type, n_embd_v_gqa*kv_size)*sinfo.s0);
@@ -1285,8 +1316,8 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
 
     // note: v->nb[1] > v->nb[2]
     return ggml_view_4d(ctx, v,
-            n_kv, hparams.n_head_kv(il), hparams.n_embd_head_v(il), ns,
-            ggml_row_size(v->type, kv_size*hparams.n_embd_head_v(il)),  // v->nb[1]
+            n_kv, hparams.n_head_kv(il), n_embd_head_v_eff, ns,
+            ggml_row_size(v->type, kv_size*n_embd_head_v_eff),         // v->nb[1]
             ggml_row_size(v->type, kv_size),                        // v->nb[2]
             ggml_row_size(v->type, kv_size*n_embd_v_gqa),           // v->nb[3]
             ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
@@ -1299,9 +1330,14 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
 
     ggml_tensor * k = layers[ikv].k;
 
-    const int64_t n_embd_head = k_cur->ne[0];
+    int64_t n_embd_head = k_cur->ne[0];
     const int64_t n_head      = k_cur->ne[1];
     const int64_t n_tokens    = k_cur->ne[2];
+
+    if (llama_kv_type_is_turbo(k->type) && n_embd_head % 128 != 0) {
+        k_cur = ggml_pad(ctx, k_cur, llama_turbo_pad_head_dim((uint32_t) n_embd_head) - n_embd_head, 0, 0, 0);
+        n_embd_head = k_cur->ne[0];
+    }
 
     const int64_t n_embd_gqa = n_embd_head*n_head;
 
@@ -1334,9 +1370,14 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
 
     auto * v = layers[ikv].v;
 
-    const int64_t n_embd_head = v_cur->ne[0];
+    int64_t n_embd_head = v_cur->ne[0];
     const int64_t n_head      = v_cur->ne[1];
     const int64_t n_tokens    = v_cur->ne[2];
+
+    if (llama_kv_type_is_turbo(v->type) && n_embd_head % 128 != 0) {
+        v_cur = ggml_pad(ctx, v_cur, llama_turbo_pad_head_dim((uint32_t) n_embd_head) - n_embd_head, 0, 0, 0);
+        n_embd_head = v_cur->ne[0];
+    }
 
     const int64_t n_embd_gqa = n_embd_head*n_head;
 
@@ -2114,9 +2155,8 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
     for (const auto & layer : layers) {
         const uint32_t il = layer.il;
 
-        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
-
         auto * k = layer.k_stream[cr.strm];
+        const uint32_t n_embd_k_gqa = (uint32_t) k->ne[0];
 
         // Write key type
         const int32_t k_type_i = (int32_t) k->type;
@@ -2138,12 +2178,11 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
         for (const auto & layer : layers) {
             const uint32_t il = layer.il;
 
-            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
-
             auto * v = layer.v_stream[cr.strm];
             if (!v) {
                 continue;
             }
+            const uint32_t n_embd_v_gqa = (uint32_t) v->ne[0];
 
             // Write value type
             const int32_t v_type_i = (int32_t) v->type;
@@ -2167,12 +2206,11 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
         for (const auto & layer : layers) {
             const uint32_t il = layer.il;
 
-            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
-
             auto * v = layer.v_stream[cr.strm];
             if (!v) {
                 continue;
             }
+            const uint32_t n_embd_v_gqa = (uint32_t) v->ne[0];
 
             // Write value type
             const int32_t v_type_i = (int32_t) v->type;
@@ -2346,9 +2384,8 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
     for (const auto & layer : layers) {
         const uint32_t il = layer.il;
 
-        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
-
         auto * k = layer.k_stream[strm];
+        const uint32_t n_embd_k_gqa = (uint32_t) k->ne[0];
 
         // Read type of key
         int32_t k_type_i_ref;
@@ -2386,12 +2423,11 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
         for (const auto & layer : layers) {
             const uint32_t il = layer.il;
 
-            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
-
             auto * v = layer.v_stream[strm];
             if (!v) {
                 continue;
             }
+            const uint32_t n_embd_v_gqa = (uint32_t) v->ne[0];
 
             // Read type of value
             int32_t v_type_i_ref;
@@ -2429,12 +2465,11 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
         for (const auto & layer : layers) {
             const uint32_t il = layer.il;
 
-            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
-
             auto * v = layer.v_stream[strm];
             if (!v) {
                 continue;
             }
+            const uint32_t n_embd_v_gqa = (uint32_t) v->ne[0];
 
             // Read type of value
             int32_t v_type_i_ref;

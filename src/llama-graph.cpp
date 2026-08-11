@@ -4,6 +4,7 @@
 #include "llama-model.h"
 #include "llama-batch.h"
 #include "llama-cparams.h"
+#include "llama-turbo.h"
 
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
@@ -20,6 +21,37 @@
 #include <sstream>
 #include <string>
 #include <unordered_set>
+
+static ggml_tensor * llama_turbo_wht_forward(ggml_context * ctx, ggml_tensor * cur) {
+    GGML_ASSERT(cur->type == GGML_TYPE_F32);
+    if (cur->ne[0] % 128 != 0) {
+        cur = ggml_pad(ctx, cur, llama_turbo_pad_head_dim((uint32_t) cur->ne[0]) - cur->ne[0], 0, 0, 0);
+    }
+    if (!ggml_is_contiguous(cur)) {
+        cur = ggml_cont(ctx, cur);
+    }
+    return ggml_turbo_wht(ctx, cur, 0);
+}
+
+static ggml_tensor * llama_turbo_wht_inverse(
+        ggml_context * ctx,
+        ggml_tensor  * cur,
+              int64_t original_head_dim) {
+    GGML_ASSERT(cur->type == GGML_TYPE_F32);
+    GGML_ASSERT(cur->ne[0] % 128 == 0);
+    if (!ggml_is_contiguous(cur)) {
+        cur = ggml_cont(ctx, cur);
+    }
+    cur = ggml_turbo_wht(ctx, cur, 1);
+
+    if (cur->ne[0] != original_head_dim) {
+        GGML_ASSERT(cur->ne[0] > original_head_dim);
+        cur = ggml_view_4d(ctx, cur, original_head_dim, cur->ne[1], cur->ne[2], cur->ne[3],
+                cur->nb[1], cur->nb[2], cur->nb[3], 0);
+        cur = ggml_cont(ctx, cur);
+    }
+    return cur;
+}
 
 // dedup helpers
 
@@ -2392,6 +2424,12 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                float   kq_scale,
                  int   il) const {
     const bool v_trans = v->nb[1] > v->nb[2];
+    const bool k_is_turbo = llama_kv_type_is_turbo(k->type);
+    const bool v_is_turbo = llama_kv_type_is_turbo(v->type);
+
+    if (k_is_turbo) {
+        q = llama_turbo_wht_forward(ctx0, q);
+    }
 
     // split the batch into streams if needed
     const auto n_stream = k->ne[3];
@@ -2427,6 +2465,10 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
+
+        if (v_is_turbo) {
+            cur = llama_turbo_wht_inverse(ctx0, cur, hparams.n_embd_head_v(il));
+        }
 
         if (v_mla) {
 #if 0
@@ -2493,6 +2535,10 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
         cb(kqv, "kqv", il);
+
+        if (v_is_turbo) {
+            kqv = llama_turbo_wht_inverse(ctx0, kqv, hparams.n_embd_head_v(il));
+        }
 
         // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
         if (v_mla) {

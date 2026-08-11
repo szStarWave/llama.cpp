@@ -41,6 +41,7 @@ static std::atomic<bool> compile_failed{false};
 std::locale c_locale("C");
 
 std::string GLSLC = "glslc";
+std::string GLSLANG = "glslang";
 std::string input_filepath = "";
 std::string output_dir = "/tmp";
 std::string target_hpp = "";
@@ -73,6 +74,92 @@ const std::vector<std::string> type_names = {
     "mxfp4",
     "nvfp4",
     "bf16",
+};
+
+const std::vector<std::string> load_a_opt_kernels = {
+    "matmul_id_subgroup_mxfp4_f32_cm1",
+    "matmul_f16_cm1",
+    "matmul_f16_f32_cm1",
+    "matmul_f32_f32_cm1",
+    "matmul_q4_k_f32_cm1",
+    "matmul_q6_k_f32_cm1",
+    "matmul_q5_0_f32_cm1",
+    "matmul_q8_0_f32_cm1",
+    "matmul_id_subgroup_mxfp4_f32_aligned_cm1",
+    "matmul_f16_aligned_cm1",
+    "matmul_f16_f32_aligned_cm1",
+    "matmul_f32_f32_aligned_cm1",
+    "matmul_q4_k_f32_aligned_cm1",
+    "matmul_q6_k_f32_aligned_cm1",
+    "matmul_q5_0_f32_aligned_cm1",
+    "matmul_q8_0_f32_aligned_cm1",
+    // f16acc variants (Step 6.2)
+    "matmul_q4_k_f32_f16acc_cm1",
+    "matmul_q6_k_f32_f16acc_cm1",
+    "matmul_q5_0_f32_f16acc_cm1",
+    "matmul_q8_0_f32_f16acc_cm1",
+    "matmul_id_subgroup_mxfp4_f32_f16acc_cm1",
+    "matmul_q4_k_f32_aligned_f16acc_cm1",
+    "matmul_q6_k_f32_aligned_f16acc_cm1",
+    "matmul_q5_0_f32_aligned_f16acc_cm1",
+    "matmul_q8_0_f32_aligned_f16acc_cm1",
+    "matmul_id_subgroup_mxfp4_f32_aligned_f16acc_cm1",
+    // f16 B-type MXFP4 variants (Step 6.2/6.3)
+    "matmul_id_subgroup_mxfp4_f16_cm1",
+    "matmul_id_subgroup_mxfp4_f16_aligned_cm1",
+    "matmul_id_subgroup_mxfp4_f16_f16acc_cm1",
+    "matmul_id_subgroup_mxfp4_f16_aligned_f16acc_cm1",
+    // Q4_K / Q5_K MUL_MAT_ID subgroup variants
+    "matmul_id_subgroup_q4_k_f32_cm1",
+    "matmul_id_subgroup_q4_k_f32_aligned_cm1",
+    "matmul_id_subgroup_q4_k_f32_f16acc_cm1",
+    "matmul_id_subgroup_q4_k_f32_aligned_f16acc_cm1",
+    "matmul_id_subgroup_q4_k_f16_cm1",
+    "matmul_id_subgroup_q4_k_f16_aligned_cm1",
+    "matmul_id_subgroup_q4_k_f16_f16acc_cm1",
+    "matmul_id_subgroup_q4_k_f16_aligned_f16acc_cm1",
+    "matmul_id_subgroup_q5_k_f32_cm1",
+    "matmul_id_subgroup_q5_k_f32_aligned_cm1",
+    "matmul_id_subgroup_q5_k_f32_f16acc_cm1",
+    "matmul_id_subgroup_q5_k_f32_aligned_f16acc_cm1",
+    "matmul_id_subgroup_q5_k_f16_cm1",
+    "matmul_id_subgroup_q5_k_f16_aligned_cm1",
+    "matmul_id_subgroup_q5_k_f16_f16acc_cm1",
+    "matmul_id_subgroup_q5_k_f16_aligned_f16acc_cm1",
+    // Q5_1 dense GEMM and MUL_MAT_ID variants
+    "matmul_q5_1_f32_cm1",
+    "matmul_q5_1_f32_aligned_cm1",
+    "matmul_q5_1_f32_f16acc_cm1",
+    "matmul_q5_1_f32_aligned_f16acc_cm1",
+    "matmul_q5_1_f16_cm1",
+    "matmul_q5_1_f16_aligned_cm1",
+    "matmul_q5_1_f16_f16acc_cm1",
+    "matmul_q5_1_f16_aligned_f16acc_cm1",
+    "matmul_id_subgroup_q5_1_f32_cm1",
+    "matmul_id_subgroup_q5_1_f32_aligned_cm1",
+    "matmul_id_subgroup_q5_1_f32_f16acc_cm1",
+    "matmul_id_subgroup_q5_1_f32_aligned_f16acc_cm1",
+    "matmul_id_subgroup_q5_1_f16_cm1",
+    "matmul_id_subgroup_q5_1_f16_aligned_cm1",
+    "matmul_id_subgroup_q5_1_f16_f16acc_cm1",
+    "matmul_id_subgroup_q5_1_f16_aligned_f16acc_cm1",
+    // f16 B-type dense GEMM variants (Step 6.3)
+    "matmul_q5_0_f16_cm1",
+    "matmul_q5_0_f16_aligned_cm1",
+    "matmul_q5_0_f16_f16acc_cm1",
+    "matmul_q5_0_f16_aligned_f16acc_cm1",
+    "matmul_q8_0_f16_cm1",
+    "matmul_q8_0_f16_aligned_cm1",
+    "matmul_q8_0_f16_f16acc_cm1",
+    "matmul_q8_0_f16_aligned_f16acc_cm1",
+    "matmul_q4_k_f16_cm1",
+    "matmul_q4_k_f16_aligned_cm1",
+    "matmul_q4_k_f16_f16acc_cm1",
+    "matmul_q4_k_f16_aligned_f16acc_cm1",
+    "matmul_q6_k_f16_cm1",
+    "matmul_q6_k_f16_aligned_cm1",
+    "matmul_q6_k_f16_f16acc_cm1",
+    "matmul_q6_k_f16_aligned_f16acc_cm1",
 };
 
 enum MatMulIdType {
@@ -109,6 +196,13 @@ int execute_command(std::vector<std::string>& command, std::string& stdout_str, 
     std::string cmd;
     for (const auto& part : command) {
         cmd += part + " ";
+    }
+
+    for (int32_t ii = 0; ii < load_a_opt_kernels.size(); ii++) {
+        if (cmd.find(load_a_opt_kernels.at(ii)) != std::string::npos) {
+            cmd.append(" -DLOAD_A_OPT");
+            std::cout << cmd << std::endl;
+        }
     }
 
     if (!CreateProcessA(NULL, cmd.data(), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
@@ -413,6 +507,77 @@ void string_to_spv_func(std::string name, std::string in_path, std::string out_p
     }
 }
 
+void string_to_spv_glslang_func(std::string name, std::string in_path, std::string out_path, std::map<std::string, std::string> defines, bool coopmat, bool dep_file, compile_count_guard slot) {
+    std::string target_env = "--target-env vulkan1.4";
+
+#ifdef _WIN32
+    std::vector<std::string> cmd = { GLSLANG, target_env, "\"" + in_path + "\"", "-o", "\"" + out_path + "\"" };
+#else
+    std::vector<std::string> cmd = { GLSLANG, target_env, in_path, "-o", out_path };
+#endif
+
+    // disable spirv-opt for coopmat shaders for https://github.com/ggml-org/llama.cpp/issues/10734
+    // disable spirv-opt for bf16 shaders for https://github.com/ggml-org/llama.cpp/issues/15344
+    // disable spirv-opt for rope shaders for https://github.com/ggml-org/llama.cpp/issues/16860
+    if (!coopmat && name.find("bf16") == std::string::npos && name.find("rope") == std::string::npos) {
+        cmd.push_back("-O");
+    }
+
+    if (dep_file) {
+        //        cmd.push_back("-MD");
+        cmd.push_back("--depfile");
+#ifdef _WIN32
+        cmd.push_back("\"" + target_cpp + ".d\"");
+#else
+        cmd.push_back(target_cpp + ".d");
+#endif
+    }
+
+#ifdef GGML_VULKAN_SHADER_DEBUG_INFO
+    cmd.push_back("-g");
+#endif
+
+    for (const auto& define : defines) {
+        cmd.push_back("-D" + define.first + "=" + define.second);
+    }
+
+    std::string command;
+    for (const auto& part : cmd) {
+        command += part + " ";
+    }
+
+    std::string stdout_str, stderr_str;
+    try {
+        execute_command(cmd, stdout_str, stderr_str);
+        if (!stderr_str.empty()) {
+            std::cerr << "cannot compile " << name << "\n\n";
+            for (const auto& part : cmd) {
+                std::cerr << part << " ";
+            }
+            std::cerr << "\n\n" << stderr_str << std::endl;
+            return;
+        }
+
+        if (dep_file) {
+            // replace .spv output path with the embed .cpp path which is used as output in CMakeLists.txt
+            std::string dep = read_binary_file(target_cpp + ".d", true);
+            if (!dep.empty()) {
+                size_t pos = dep.find(out_path);
+                if (pos != std::string::npos) {
+                    dep.replace(pos, out_path.length(), target_cpp);
+                }
+                write_binary_file(target_cpp + ".d", dep);
+            }
+        }
+
+        std::lock_guard<std::mutex> guard(lock);
+        shader_fnames.push_back(std::make_pair(name, out_path));
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error executing command for " << name << ": " << e.what() << std::endl;
+    }
+}
+
 std::map<std::string, std::string> merge_maps(const std::map<std::string, std::string>& a, const std::map<std::string, std::string>& b) {
     std::map<std::string, std::string> result = a;
     result.insert(b.begin(), b.end());
@@ -443,6 +608,27 @@ void string_to_spv(std::string name, const std::string& source, const std::map<s
     while (!compiles.empty() && compiles.front().wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         compiles.pop_front();
     }
+}
+
+void string_to_spv_glslang(std::string name, const std::string& source, const std::map<std::string, std::string>& defines, bool fp16 = true, bool coopmat = false, bool coopmat2 = false, bool f16acc = false, const std::string& suffix = "") {
+    name = name + (f16acc ? "_f16acc" : "") + (coopmat ? "_cm1" : "") + (coopmat2 ? "_cm2" : (fp16 ? "" : "_fp32")) + suffix;
+    std::string out_path = join_paths(output_dir, name + ".spv");
+
+    if (input_filepath == "") {
+        // No input source to compile, only generate header for all shaders
+        shader_fnames.push_back(std::pair(name, out_path));
+        return;
+    }
+    else if (basename(input_filepath) != source) {
+        // Only compile shader variants matching the input filename
+        return;
+    }
+
+    compile_count_guard slot = acquire_compile_slot();
+    compiles.push_back(std::async(
+        string_to_spv_glslang_func, name, input_filepath, out_path, defines, coopmat, generate_dep_file, std::move(slot)));
+    // Don't write the same dep file from multiple processes
+    generate_dep_file = false;
 }
 
 void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool coopmat2, bool f16acc, bool dot2 = false) {
@@ -788,6 +974,16 @@ void process_shaders() {
         string_to_spv("get_rows_" + tname + "_f32", shader, merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {data_a_key, "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
     }
 
+    for (const std::string tname : {"turbo3_0", "turbo4_0"}) {
+        const std::string data_a_key = "DATA_A_" + to_uppercase(tname);
+        string_to_spv("dequant_" + tname, "dequant_turbo.comp",
+            merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float16_t"}}));
+        string_to_spv("get_rows_" + tname, "get_rows_quant.comp",
+            merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {data_a_key, "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+        string_to_spv("get_rows_" + tname + "_f32", "get_rows_quant.comp",
+            merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {data_a_key, "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
+    }
+
     string_to_spv("get_rows_i32", "get_rows.comp", {{"TEMP_TYPE", "uint"}, {"A_TYPE", "uint"}, {"B_TYPE", "int"}, {"D_TYPE", "uint"}});
 
     string_to_spv("mul_mat_vec_p021_f16_f32_subgroup_add", "mul_mat_vec_p021.comp", {{"A_TYPE", "float16_t"}, {"A_TYPEV4", "f16vec4"}, {"B_TYPE", "float"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}});
@@ -829,12 +1025,25 @@ void process_shaders() {
         string_to_spv("cpy_" + t + "_f32", "copy_from_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
     }
 
+    for (std::string t : {"turbo3_0", "turbo4_0"}) {
+        string_to_spv("cpy_" + t + "_f32", "copy_from_quant.comp",
+            {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+    }
+
     for (auto src : {std::pair{"f32", "float"}, std::pair{"f16", "float16_t"}}) {
         for (std::string dst : {"f32", "f16", "bf16", "q1_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl"}) {
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i32", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i64", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
         }
+        for (std::string dst : {"turbo3_0", "turbo4_0"}) {
+            string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i32", "copy_to_turbo.comp",
+                {{"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}});
+            string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i64", "copy_to_turbo.comp",
+                {{"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}});
+        }
     }
+
+    string_to_spv("turbo_wht", "turbo_wht.comp", {});
 
     auto get_type_str = [](bool f16) {
         return f16 ? "float16_t" : "float";
@@ -867,6 +1076,16 @@ void process_shaders() {
     string_to_spv("fa_split_k_reduce", "flash_attn_split_k_reduce.comp", {});
 
     string_to_spv("fa_mask_opt", "flash_attn_mask_opt.comp", {});
+
+    string_to_spv("fa_hdim_64", "flash_attn_hdim64.comp", {}, true, true, false, false);
+    string_to_spv("fa_hdim_96", "flash_attn_hdim96.comp", {}, true, true, false, false);
+    string_to_spv("fa_hdim_128", "flash_attn_hdim128.comp", {}, true, true, false, false);
+    string_to_spv("fa_decode_ph1", "flash_attn_decode_phase_1.comp", {}, true, true, false, false);
+    string_to_spv("fa_decode_ph2", "flash_attn_decode_phase_2.comp", {}, true, true, false, false);
+    string_to_spv("fa_mtp_decode_ph1", "flash_attn_mtp_decode_phase_1.comp", {}, true, true, false, false);
+    string_to_spv("fa_mtp_decode_ph2", "flash_attn_mtp_decode_phase_2.comp", {}, true, true, false, false);
+    string_to_spv("fa_prefill_ph1", "flash_attn_prefill_phase_1.comp", {}, true, true, false, false);
+    string_to_spv("fa_prefill_ph2", "flash_attn_prefill_phase_2.comp", {}, true, true, false, false);
 
     string_to_spv("quantize_q8_1", "quantize_q8_1.comp", {});
     string_to_spv("quantize_q8_1_subgroup", "quantize_q8_1.comp", {{"USE_SUBGROUPS", "1"}});
@@ -1308,6 +1527,9 @@ int main(int argc, char** argv) {
 
     if (args.find("--glslc") != args.end()) {
         GLSLC = args["--glslc"]; // Path to glslc
+        GLSLANG = GLSLC;
+        auto pos = GLSLANG.find("glslc");
+        GLSLANG.replace(pos, 5, "glslang");
     }
     if (args.find("--source") != args.end()) {
         input_filepath = args["--source"]; // The shader source file to compile

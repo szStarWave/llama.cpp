@@ -1,0 +1,34 @@
+#version 450
+
+#extension GL_EXT_control_flow_attributes : require
+
+#include "turbo_quant.glsl"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(push_constant) uniform parameter { uint ne; uint direction; } p;
+layout(binding = 0) readonly buffer A { float data_a[]; };
+layout(binding = 1) writeonly buffer D { float data_d[]; };
+
+shared float values[128];
+
+void main() {
+    const uint lane = gl_LocalInvocationID.x;
+    const uint base = (gl_WorkGroupID.z * 262144u + gl_WorkGroupID.y * 512u + gl_WorkGroupID.x) * 128u;
+    if (base + lane >= p.ne) return;
+
+    const float first = p.direction == 0u ? TURBO_WHT_S1[lane] : TURBO_WHT_S2[lane];
+    const float second = p.direction == 0u ? TURBO_WHT_S2[lane] : TURBO_WHT_S1[lane];
+    values[lane] = data_a[base + lane] * first;
+    barrier();
+
+    [[unroll]] for (uint step = 1u; step < 128u; step *= 2u) {
+        if ((lane % (2u * step)) < step) {
+            const float a = values[lane];
+            const float b = values[lane + step];
+            values[lane] = a + b;
+            values[lane + step] = a - b;
+        }
+        barrier();
+    }
+    data_d[base + lane] = values[lane] * 0.08838834764831845 * second;
+}
