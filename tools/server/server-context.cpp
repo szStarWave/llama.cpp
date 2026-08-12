@@ -755,6 +755,7 @@ private:
 
     bool add_bos_token = true;
     bool aidaptiv_limit_multi_mtmd_prefix = false;
+    bool aidaptiv_skip_mtmd_kv_cache = false;
 
     int32_t n_ctx; // total context for all clients / slots
 
@@ -1045,6 +1046,11 @@ private:
                 restore_tokens.empty() ? -1 : restore_tokens.back());
 
         const auto mtmd_info = input_tokens.get_aidaptiv_mtmd_info(aligned_tokens);
+        if (aidaptiv_skip_mtmd_kv_cache && !mtmd_info.empty()) {
+            SRV_DBG("phison_restore_slot skip: slot=%d arch mtmd KV cache disabled, mtmd=%zu tokens=%zu\n",
+                    slot.id, mtmd_info.size(), restore_tokens.size());
+            return n_past;
+        }
         const auto loras = phison_active_loras(slot);
         SRV_DBG("phison_restore_slot call restore: slot=%d mtmd=%zu lora=%zu tokens=%zu\n",
                 slot.id, mtmd_info.size(), loras.size(), restore_tokens.size());
@@ -1212,6 +1218,11 @@ private:
         }
 
         const auto mtmd_info = slot.prompt.tokens.get_aidaptiv_mtmd_info(save_tokens);
+        if (aidaptiv_skip_mtmd_kv_cache && !mtmd_info.empty()) {
+            SRV_DBG("phison_save_slot skip: slot=%d arch mtmd KV cache disabled, mtmd=%zu tokens=%zu reason=%s\n",
+                    slot.id, mtmd_info.size(), save_tokens, reason);
+            return false;
+        }
         const uint64_t save_hash = stable_token_hash(all_tokens, save_tokens);
         const bool restore_then_save_extension =
             slot.phison_kv_restored_this_task &&
@@ -1384,13 +1395,21 @@ private:
 
         char model_arch[64] = {};
         aidaptiv_limit_multi_mtmd_prefix = false;
+        aidaptiv_skip_mtmd_kv_cache = false;
         if (llama_model_meta_val_str(model_tgt, "general.architecture", model_arch, sizeof(model_arch)) > 0) {
+            const std::string arch = model_arch;
             // Temporary workaround until aiDAPTIV can restore multiple Qwen3.5 MTMD chunks safely.
-            aidaptiv_limit_multi_mtmd_prefix = std::string(model_arch) == "qwen35" ||
-                                               std::string(model_arch) == "qwen35moe";
+            aidaptiv_limit_multi_mtmd_prefix = arch == "qwen35" ||
+                                               arch == "qwen35moe";
+            aidaptiv_skip_mtmd_kv_cache = arch == "qwen2vl" ||
+                                          arch == "qwen3vl" ||
+                                          arch == "qwen3vlmoe" ||
+                                          arch == "qwen35" ||
+                                          arch == "qwen35moe";
         }
-        SRV_INF("aiDAPTIV multi-MTMD prefix limit: %s, arch = %s\n",
+        SRV_INF("aiDAPTIV multi-MTMD prefix limit: %s, MTMD KV cache: %s, arch = %s\n",
                 aidaptiv_limit_multi_mtmd_prefix ? "enabled" : "disabled",
+                aidaptiv_skip_mtmd_kv_cache ? "disabled" : "enabled",
                 model_arch[0] != '\0' ? model_arch : "unknown");
 
         // Initialize aiDAPTIV runtime after context is created
