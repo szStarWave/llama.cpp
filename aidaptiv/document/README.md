@@ -128,26 +128,43 @@ adptv.flush_kv_cache();
 
 For text-only prompts without LoRA, pass `{}` for `mtmd_info` and `lora_adapters` (as in the example above).
 
-### 5. Reclaim offload space (`clean_kv_cache`)
+### 5. Reclaim offload space (`reclaim_offload_space`)
 
-When you need disk space under `offload_path`, call `clean_kv_cache()` to clean **unused** KV caches.
+When you need disk space under `offload_path`, call `reclaim_offload_space()`.
 
 ```cpp
-// Reclaim at least 1 GiB from unused KV caches
-std::size_t freed = adptv.clean_kv_cache(1024LL * 1024 * 1024);
+// Reclaim at least 1 GiB
+std::size_t freed = adptv.reclaim_offload_space(1024LL * 1024 * 1024);
 ```
 
-`expect_size` is the **minimum number of bytes you want to free**. The runtime scans `offload_path` for unused KV-cache sets (`kv_cache` / `prefix_tree` / `model_info` per model) that are **not locked or in use**. It deletes the **oldest** unused sets **whose combined size is at least** `expect_size`. The return value is how many bytes were actually removed.
+`expect_size` is the **minimum number of bytes you want to free**. Eviction order:
+
+1. **Unused expert caches** under `temp_cache` (oldest first; in-use folders skipped).
+2. If still short, **unused KV-cache sets** (`kv_cache` / `prefix_tree` / `model_info` per model), also oldest first and skipping in-use files.
+
+The return value is how many bytes were actually removed.
 
 
 | Situation                                                                  | Result                                                       |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Enough unused cache (one large model, or several smaller ones that add up) | Deletes the chosen set(s); typically `freed >= expect_size`. |
-| Every cache is in use or locked                                            | No deletion; returns `0`.                                    |
+| Enough unused expert and/or KV cache                                       | Deletes the chosen set(s); typically `freed >= expect_size`. |
+| Every cache is in use                                                      | No deletion; returns `0`.                                    |
 | Unused caches exist but their total size is still below `expect_size`      | No deletion; returns `0`.                                    |
 
 
-Locked subfolders are not evicted (see **KV cache lock folders** under APIs).
+Caches that are currently in use are not evicted. KV subfolders locked via the lock folder API are also kept (see **KV cache lock folders**).
+
+### SSD space cleanup
+
+When SSD space is short, cleanup runs in these cases:
+
+1. **KV cache not enough** (need room to save / extend KV)
+   1. Auto-delete for the required size.
+   2. Or call `reclaim_offload_space(expect_size)` yourself to reclaim a specific amount.
+2. **Expert cache not enough** (need room to store MoE expert weights)
+   1. Auto-delete for the required size.
+   2. Or call `reclaim_offload_space(expect_size)` yourself to reclaim a specific amount.
+3. **Delete order** (shared by both auto paths): unused expert data first, then unused KV cache. In-use data is never deleted. Oldest unused data is removed first; cleanup stops once enough space is freed.
 
 ### Node-aligned access
 
@@ -195,28 +212,32 @@ KV cache keys include multimodal content, not only text tokens. Use `aidaptiv::m
 ```cpp
 struct mtmd_chunk_info {
     uint64_t    img_chunk_id = 0;   // image chunk id (e.g. from mtmd_input_chunk_get_id)
-    std::size_t token_cnt    = 0;   // how many prompt tokens that chunk expands to
+    std::size_t token_cnt    = 0;   // how many KV / decode tokens that image expands to after mtmd encoding
 };
 using mtmd_seq_info = std::vector<mtmd_chunk_info>;  // one entry per image chunk, in prompt order
 ```
 
+**Compact token list for lookup / save / restore:** pass **one** `-1` (`MULTIMODAL_TOKEN`) per image in the token sequence. Do **not** expand the image into `token_cnt` copies of `-1` in `lookup_tokens` / `tokens_to_save`. The real patch count lives only in `mtmd_info[].token_cnt`; the library expands internally when hashing and restoring KV.
+
 
 | Field          | Meaning                                                                                                                                                                                                                                                                                                                                                |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `img_chunk_id` | Stable id for the image chunk (same value at save and restore). **Recommended:** hash the raw image (or audio) bytes into a `uint64_t` so the same file always gets the same id. **llama-server** does this with an FNV-style hash of the bitmap, stores it on the chunk id, then passes `std::stoull(mtmd_input_chunk_get_id(...))` into `mtmd_info`. |
-| `token_cnt`    | How many consecutive multimodal placeholder tokens in `prompt_tokens` belong to this chunk (same count as after `mtmd` encoding).                                                                                                                                                                                                                      |
+| `token_cnt`    | How many tokens that image expands to after `mtmd` encoding (patch / image-token count). Used with the single `-1` placeholder in the compact token list.                                                                                                                                                                                              |
 
 
 **How to build it in your app**
 
 1. Set `setup_params.mmproj_model_path` for multimodal models.
-2. For each image chunk in prompt order: set `img_chunk_id` (from `mtmd_input_chunk_get_id`, or your own hash of the image/path) and `token_cnt`.
-3. In `prompt_tokens`, insert placeholder token `-1` (`MULTIMODAL_TOKEN`) for each of those `token_cnt` positions, in the same order as `mtmd_info`.
+2. For each image chunk in prompt order: set `img_chunk_id` (from `mtmd_input_chunk_get_id`, or your own hash of the image/path) and `token_cnt` (from mtmd encoding).
+3. In the token list passed to `restore_kv_cache()` / `save_kv_cache()`, insert **one** placeholder token `-1` (`MULTIMODAL_TOKEN`) per image, in the same order as `mtmd_info`.
 4. Pass the **same** `mtmd_info` to `restore_kv_cache()` and `save_kv_cache()`. For restore, use `lookup_tokens` (prompt minus last token), not the full `prompt_tokens`.
 
 ```cpp
+// Compact tokens: one MULTIMODAL_TOKEN (-1) per image, not token_cnt copies.
+// Example layout: [text..., -1, text..., -1, text...]
 aidaptiv::mtmd_seq_info mtmd_info = {
-    { img_chunk_id_0, n_tokens_image_0 },
+    { img_chunk_id_0, n_tokens_image_0 },  // n_tokens_image_* = expanded count after mtmd
     { img_chunk_id_1, n_tokens_image_1 },
 };
 
@@ -226,7 +247,7 @@ auto stats = adptv.restore_kv_cache(lookup_tokens, mtmd_info, lora_adapters, slo
 adptv.save_kv_cache(tokens_to_save, mtmd_info, lora_adapters, slot_id);
 ```
 
-If `img_chunk_id`, `token_cnt`, or placeholder layout differ between save and restore, prefix lookup will miss or match the wrong cache.
+If `img_chunk_id`, `token_cnt`, or compact placeholder layout differ between save and restore, prefix lookup will miss or match the wrong cache.
 
 ### LoRA adapters (`lora_info`)
 
@@ -285,11 +306,70 @@ If `path`, `scale`, or the set of adapters differ between save and restore, pref
 
 **Note:** In llama.cpp `common`, `task_name` and `prompt_prefix` are read from the LoRA GGUF metadata at load time. For aiDAPTIV KV lookup only `path` and `scale` matter; you may leave the strings empty when filling `lora_info` yourself.
 
+### Draft models (speculative decoding / MTP)
+
+In speculative decoding the draft context decodes the same positions as the target, so it has **its own KV cache**. That cache is not covered by the target's `Aidaptiv`: create a **second instance** for the draft context and drive it alongside the target.
+
+Skip the second instance when the draft shares the target's memory (Gemma 4 assistant-style drafts, where `llama_get_ctx_other(ctx_dft) == ctx_tgt`). Those cells are restored with the target.
+
+```cpp
+aidaptiv::setup_params sp_dft = sp;                       // same KV budgets as the target
+sp_dft.model_path = draft_path.empty() ? sp.model_path : draft_path;   // target GGUF if the MTP head is in it
+sp_dft.flash_attn = llama_flash_attn(ctx_dft);
+
+aidaptiv::Aidaptiv adptv_dft(adptv.offload_path(), debug_log_path, sp_dft);
+adptv_dft.init(ctx_dft, model_dft);
+```
+
+Each instance keys its caches on its own `model_path`, so the draft files stay separate from the target's even when the draft reuses the target GGUF.
+
+**Restore both to the same prefix.** The draft must hold KV for exactly the tokens the target skips; a shorter draft prefix makes it attend over a hole and every prediction is rejected. The two instances evict independently, so restore the draft first and cap the target with what the draft actually returned:
+
+```cpp
+std::vector<llama_token> lookup_tokens(prompt_tokens.begin(), prompt_tokens.end() - 1);
+
+auto dft_stats = adptv_dft.restore_kv_cache(lookup_tokens, {}, {}, 0, 0);
+uint32_t dft_reuse = dft_stats.dram_reuse_token_cnt + dft_stats.ssd_reuse_token_cnt;
+lookup_tokens.resize(std::min<size_t>(lookup_tokens.size(), dft_reuse));
+
+auto stats = adptv.restore_kv_cache(lookup_tokens, {}, {}, 0, 0);
+uint32_t skip = stats.dram_reuse_token_cnt + stats.ssd_reuse_token_cnt;
+
+// the prefill rewrites the draft positions from `skip` on; drop the cells left there
+if (dft_reuse > skip) {
+    llama_memory_seq_rm(llama_get_memory(ctx_dft), 0, (llama_pos) skip, -1);
+}
+```
+
+**Save and flush both** with the same tokens; the draft mirrors the target positions, so one token sequence keys both caches:
+
+```cpp
+adptv.save_kv_cache(tokens_to_save, {}, lora_adapters);
+adptv_dft.save_kv_cache(tokens_to_save, {}, {});
+
+adptv.flush_kv_cache();
+adptv_dft.flush_kv_cache();
+```
+
+**Note:** on recurrent / hybrid targets, save the draft at the same node-aligned checkpoints as the target (see **Recurrent and hybrid models**). If the target saves a checkpoint the draft did not, the next run's draft prefix is shorter and caps the target's reuse.
+
 ### 6. Shut down cleanly
+
+Flush pending KV writes, then remove expert temp caches under `offload_path`:
+
+| API | Behavior |
+| --- | --- |
+| `remove_owned_temp_caches()` | Remove only the expert temp caches this run published or adopted. Skip caches still held by another live process (keeps other runs' caches for resume). **Demo uses this.** |
+| `remove_temp_caches()` | Remove every not being used expert temp cache under the offload root. |
 
 ```cpp
 adptv.flush_kv_cache();
-adptv.remove_temp_caches();
+
+// Prefer when other processes may still need caches under offload_path (demo uses this):
+adptv.remove_owned_temp_caches();
+
+// Or wipe every not being used expert temp cache under the offload root:
+// adptv.remove_temp_caches();
 ```
 
 ## Demo
@@ -339,7 +419,8 @@ aidaptiv-demo.exe -m <model> -o <offload_path> [-n n_predict]
     [-lora adapter.gguf] [-ls scale]
     [-vc vram_experts_cached_gb] [-dc dram_experts_cached_gb]
     [-sk ssd_kv_offload_gb] [-dk dram_kv_offload_gb] 
-    [-kr kv_cache_resume_policy] [-fa] [prompt]
+    [-kr kv_cache_resume_policy] [-fa]
+    [-mtp] [-md draft.gguf] [-dn n_draft] [prompt]
 ```
 
 **Example (MoE + KV cache):**
@@ -360,6 +441,18 @@ REM Pass 2: should print non-zero Dram/Cache reuse
 aidaptiv-demo.exe -m base.gguf -o D:\\ -lora adapter.gguf -ls 1.0 -sk -1 -dk -1 -kr 1 -n 16
 ```
 
+**Example (MTP draft + KV cache):**
+
+```cmd
+REM Qwen 3.5: the MTP head comes from the target GGUF
+aidaptiv-demo.exe -m qwen3.5-35b.gguf -o D:\\ -sk -1 -dk -1 -kr 1 -mtp -n 64
+
+REM Gemma 4: separate assistant model
+aidaptiv-demo.exe -m gemma4-26b.gguf -o D:\\ -sk -1 -dk -1 -kr 1 -mtp -md gemma4-assistant.gguf -n 64
+```
+
+The demo keeps a second `Aidaptiv` instance for the draft context (see **Draft models**), so the second run also prints `MTP ... reuse token` counts. A Gemma 4 assistant shares the target's memory instead, and is restored with the target.
+
 **Flags:**
 
 
@@ -376,6 +469,9 @@ aidaptiv-demo.exe -m base.gguf -o D:\\ -lora adapter.gguf -ls 1.0 -sk -1 -dk -1 
 | `-fa`           | Enable flash attention.                                                        |
 | `-lora`         | Path to a LoRA adapter GGUF (optional).                                        |
 | `-ls`           | LoRA scale when `-lora` is set (default: `1.0`).                               |
+| `-mtp`          | Enable speculative decoding with an MTP draft (see below).                     |
+| `-md`           | Draft model GGUF; omit to take the MTP head from the target GGUF.              |
+| `-dn`           | Draft tokens per step when `-mtp` is set (default: `3`).                       |
 | trailing args   | Prompt text (default: `Hello my name is`).                                     |
 
 
@@ -450,7 +546,7 @@ for (const auto & [name, state] : locks) {
 // Lock or unlock existing subfolders under inference
 std::unordered_map<std::string, bool> set_lock_map = {
     { "my_session", true },   // lock (folder must already exist)
-    { "old_run",    false },  // unlock — release resources; unlock before delete/move
+    { "old_run",    false },  // unlock - release resources; unlock before delete/move
 };
 std::string err = adptv.update_lock_folders(set_lock_map);  // empty if OK
 ```

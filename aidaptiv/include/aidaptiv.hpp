@@ -187,12 +187,15 @@ class AIDAPTIV_API Aidaptiv {
     std::string update_lock_folders(const std::unordered_map<std::string, bool> & set_lock_map);
 
     /**
-     * @brief Free space under the offload root by evicting cached entries.
+     * @brief Free space under the offload root by evicting unused caches.
+     *
+     * Prefers unused expert caches under temp_cache; falls back to unused
+     * KV-cache sets if more space is still needed.
      *
      * @param expect_size  Target number of bytes to free.
      * @return Number of bytes actually reclaimed.
      */
-    std::size_t clean_kv_cache(int64_t expect_size);
+    std::size_t reclaim_offload_space(int64_t expect_size);
 
   private:
     class Impl;
