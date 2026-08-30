@@ -1013,6 +1013,15 @@ private:
         return aidaptiv_runtime ? aidaptiv_runtime.get() : nullptr;
     }
 
+    static std::string phison_resolved_path(const std::string & path) {
+        if (path.empty()) {
+            return path;
+        }
+        std::error_code ec;
+        const auto resolved = std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
+        return ec ? path : resolved.string();
+    }
+
     static bool aidaptiv_runtime_requested(const common_params & params) {
         return params.aidaptiv_ssd_kv_offload_gb      > 0 ||
                params.aidaptiv_dram_kv_offload_gb     > 0 ||
@@ -1221,12 +1230,6 @@ private:
         const size_t node_size = phison_node_size();
         const size_t common_n = slot.prompt.tokens.get_common_prefix(input_tokens);
         const size_t host_n_past = std::min<size_t>((size_t) std::max(0, n_past), common_n);
-        if (!slot.phison_cache_subfolder.empty() && !slot.phison_cache_folder_existed) {
-            SLT_INF(slot, "aiDAPTIV managed cache is new; skipping persistent restore: cache=%s\n",
-                    phison_cache_log_id(slot.phison_cache_subfolder).c_str());
-            return n_past;
-        }
-
         size_t hit_in_device = host_n_past - (host_n_past % node_size);
         hit_in_device = input_tokens.valid_keep_first(hit_in_device);
 
@@ -1235,6 +1238,9 @@ private:
         size_t lookup_limit = std::min(all_tokens.size() - 1, mtmd_cache_limit);
         if (document_prefix_limit > 0) {
             lookup_limit = std::min(lookup_limit, document_prefix_limit);
+            if (slot.task->params.aidaptiv_cache_build_only && all_tokens.size() >= document_prefix_limit) {
+                lookup_limit = document_prefix_limit;
+            }
         }
         if ((aidaptiv_limit_mtmd_prefix || document_prefix_limit > 0) && host_n_past >= lookup_limit) {
             return n_past;
@@ -1250,7 +1256,30 @@ private:
         const llama_tokens restore_tokens = phison_kv_cache_key_tokens(restore_tokens_raw);
         const auto mtmd_info = input_tokens.get_aidaptiv_mtmd_info(aligned_tokens);
         const auto loras = phison_active_loras(slot);
+        const uint64_t restore_raw_hash = stable_token_hash(restore_tokens_raw, restore_tokens_raw.size());
+        const uint64_t restore_key_hash = stable_token_hash(restore_tokens, restore_tokens.size());
+        SLT_INF(slot, "aiDAPTIV restore request: cache=%s subfolder=%s input_tokens=%zu common_tokens=%zu lookup_tokens=%zu aligned_tokens=%zu node_size=%zu host_n_past=%zu hit_in_device=%zu raw_hash=%016llx key_hash=%016llx first_token=%d last_token=%d mtmd=%zu loras=%zu model=%s mmproj=%s\n",
+                slot.phison_cache_subfolder.empty() ? "default" : phison_cache_log_id(slot.phison_cache_subfolder).c_str(),
+                slot.phison_cache_subfolder.empty() ? "default" : slot.phison_cache_subfolder.c_str(),
+                all_tokens.size(), common_n, lookup_limit, aligned_tokens, node_size, host_n_past, hit_in_device,
+                (unsigned long long) restore_raw_hash, (unsigned long long) restore_key_hash,
+                restore_tokens_raw.empty() ? -1 : restore_tokens_raw.front(),
+                restore_tokens_raw.empty() ? -1 : restore_tokens_raw.back(), mtmd_info.size(), loras.size(),
+                params_base.model.path.c_str(), params_base.mmproj.path.c_str());
+        const auto memory = llama_get_memory(ctx_tgt);
+        const llama_pos pos_min_before = llama_memory_seq_pos_min(memory, slot.id);
+        const llama_pos pos_max_before = llama_memory_seq_pos_max(memory, slot.id);
+        const int64_t restore_start = ggml_time_us();
         auto stats = adptv->restore_kv_cache(restore_tokens, mtmd_info, loras, slot.id, (uint32_t) std::min<size_t>(hit_in_device, UINT32_MAX));
+        const double restore_ms = (ggml_time_us() - restore_start) / 1000.0;
+        const llama_pos pos_min_after = llama_memory_seq_pos_min(memory, slot.id);
+        const llama_pos pos_max_after = llama_memory_seq_pos_max(memory, slot.id);
+        SLT_INF(slot, "aiDAPTIV restore result: cache=%s slot=%d elapsed_ms=%.3f gpu=%zu dram=%u cache=%u total=%u pos_before=[%d,%d] pos_after=[%d,%d] prompt_pos_next=%d\n",
+                slot.phison_cache_subfolder.empty() ? "default" : phison_cache_log_id(slot.phison_cache_subfolder).c_str(),
+                slot.id, restore_ms, hit_in_device, stats.dram_reuse_token_cnt, stats.ssd_reuse_token_cnt,
+                stats.dram_reuse_token_cnt + stats.ssd_reuse_token_cnt,
+                pos_min_before, pos_max_before, pos_min_after, pos_max_after,
+                slot.prompt.tokens.pos_next());
 
         size_t n_reuse = (size_t) stats.dram_reuse_token_cnt + stats.ssd_reuse_token_cnt;
         const bool managed_cache = !slot.task->params.aidaptiv_cache_id.empty();
@@ -1320,12 +1349,6 @@ private:
         if (!aidaptiv_kv_enabled() || adptv == nullptr || !slot.task || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
             return false;
         }
-        if (!slot.phison_cache_subfolder.empty() && slot.phison_cache_folder_existed) {
-            SLT_INF(slot, "aiDAPTIV document cache already exists; skipping save: cache=%s reason=%s\n",
-                    phison_cache_log_id(slot.phison_cache_subfolder).c_str(), reason);
-            return false;
-        }
-
         const llama_tokens & all_tokens = slot.prompt.tokens.get_all_tokens();
         if (all_tokens.empty()) {
             return false;
@@ -1362,7 +1385,21 @@ private:
         const llama_tokens save_seq = phison_kv_cache_key_tokens(save_seq_raw);
         const auto mtmd_info = slot.prompt.tokens.get_aidaptiv_mtmd_info(save_tokens);
         const auto loras = phison_active_loras(slot);
+        const uint64_t save_raw_hash = stable_token_hash(save_seq_raw, save_seq_raw.size());
+        const uint64_t save_key_hash = stable_token_hash(save_seq, save_seq.size());
+        SLT_INF(slot, "aiDAPTIV save request: cache=%s subfolder=%s prompt_tokens=%zu save_tokens=%zu node_size=%zu prefix_limit=%zu raw_hash=%016llx key_hash=%016llx first_token=%d last_token=%d mtmd=%zu loras=%zu model=%s mmproj=%s reason=%s\n",
+                slot.phison_cache_subfolder.empty() ? "default" : phison_cache_log_id(slot.phison_cache_subfolder).c_str(),
+                slot.phison_cache_subfolder.empty() ? "default" : slot.phison_cache_subfolder.c_str(),
+                all_tokens.size(), save_tokens, node_size, document_prefix_limit,
+                (unsigned long long) save_raw_hash, (unsigned long long) save_key_hash,
+                save_seq_raw.empty() ? -1 : save_seq_raw.front(), save_seq_raw.empty() ? -1 : save_seq_raw.back(),
+                mtmd_info.size(), loras.size(), params_base.model.path.c_str(), params_base.mmproj.path.c_str(), reason);
+        const int64_t save_start = ggml_time_us();
         adptv->save_kv_cache(save_seq, mtmd_info, loras, slot.id, slot.phison_cache_subfolder);
+        const double save_ms = (ggml_time_us() - save_start) / 1000.0;
+        SLT_INF(slot, "aiDAPTIV save result: cache=%s slot=%d elapsed_ms=%.3f tokens=%zu\n",
+                slot.phison_cache_subfolder.empty() ? "default" : phison_cache_log_id(slot.phison_cache_subfolder).c_str(),
+                slot.id, save_ms, save_tokens);
         slot.phison_kv_saved = true;
         slot.phison_kv_saved_tokens = save_tokens;
         slot.phison_kv_saved_hash = hash;
@@ -1466,8 +1503,8 @@ private:
             sp.dram_kv_offload_gb     = params_base.aidaptiv_dram_kv_offload_gb;
             sp.kv_cache_resume_policy = static_cast<uint32_t>(params_base.aidaptiv_kv_cache_resume_policy);
             sp.flash_attn             = params_base.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
-            sp.model_path             = params_base.model.path;
-            sp.mmproj_model_path      = params_base.mmproj.path;
+            sp.model_path             = phison_resolved_path(params_base.model.path);
+            sp.mmproj_model_path      = phison_resolved_path(params_base.mmproj.path);
 
             try {
                 aidaptiv_runtime = std::make_unique<aidaptiv::Aidaptiv>("", debug_log_path, sp);
@@ -3606,17 +3643,9 @@ private:
                         slot.t_start_process_prompt = ggml_time_us();
                         slot.t_start_generation = 0;
 
-                        if (slot.task->params.aidaptiv_cache_build_only && slot.phison_cache_folder_existed) {
-                            SLT_INF(slot, "aiDAPTIV document cache folder already exists; skipping cache-build task: cache=%s\n",
+                        if (slot.task->params.aidaptiv_cache_build_only) {
+                            SLT_INF(slot, "aiDAPTIV document cache build-only task will verify the persistent cache before prefill: cache=%s\n",
                                     phison_cache_log_id(slot.phison_cache_subfolder).c_str());
-                            slot.t_start_generation = slot.t_start_process_prompt;
-                            slot.t_prompt_processing = 0.0;
-                            slot.t_token_generation = 0.0;
-                            slot.stop = STOP_TYPE_LIMIT;
-                            slot.has_next_token = false;
-                            send_final_response(slot);
-                            slot.release();
-                            return;
                         }
 
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
@@ -3853,7 +3882,7 @@ private:
                                         // restore the draft's speculative state
                                         common_speculative_set_state(spec.get(), slot.id, it->data_spec);
 
-                                        pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
+                                        pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max + 1));
                                         n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
                                         SLT_TRC(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
                                     }
@@ -3885,6 +3914,21 @@ private:
                         }
 
                         n_past = phison_restore_slot(slot, input_tokens, n_past);
+
+                        if (slot.task->params.aidaptiv_cache_build_only &&
+                            slot.task->params.aidaptiv_cache_prefix_tokens > 0 &&
+                            (size_t) n_past >= slot.task->params.aidaptiv_cache_prefix_tokens &&
+                            slot.phison_kv_restored_this_task) {
+                            const int64_t now = ggml_time_us();
+                            slot.t_start_generation = now;
+                            slot.t_prompt_processing = (now - slot.t_start_process_prompt) / 1e3;
+                            slot.t_token_generation = 0.0;
+                            slot.stop = STOP_TYPE_LIMIT;
+                            slot.has_next_token = false;
+                            send_final_response(slot);
+                            slot.release();
+                            return;
+                        }
 
                         if (slot.task->params.aidaptiv_cache_prompt_build_only &&
                             (size_t) n_past >= slot.task->params.aidaptiv_cache_prefix_tokens) {
